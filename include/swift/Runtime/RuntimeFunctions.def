@@ -616,6 +616,18 @@ FUNCTION(GetForeignTypeMetadata, swift_getForeignTypeMetadata,
          ARGS(SizeTy, TypeMetadataPtrTy),
          ATTRS(NoUnwind, ReadNone)) // only writes to runtime-private fields
 
+// SWIFT_RUNTIME_EXPORT
+// SWIFT_CC(swift)
+// bool swift_compareTypeContextDescriptors(const TypeContextDescriptor *lhs,
+//                                          const TypeContextDescriptor *rhs);
+FUNCTION(CompareTypeContextDescriptors, 
+         swift_compareTypeContextDescriptors, SwiftCC, 
+         CompareTypeContextDescriptorsAvailability,
+         RETURNS(Int1Ty),
+         ARGS(TypeContextDescriptorPtrTy, 
+              TypeContextDescriptorPtrTy),
+         ATTRS(NoUnwind, ReadNone))
+
 // MetadataResponse swift_getSingletonMetadata(MetadataRequest request,
 //                                             TypeContextDescriptor *type);
 FUNCTION(GetSingletonMetadata, swift_getSingletonMetadata,
@@ -631,6 +643,26 @@ FUNCTION(GetGenericMetadata, swift_getGenericMetadata,
          SwiftCC, AlwaysAvailable,
          RETURNS(TypeMetadataResponseTy),
          ARGS(SizeTy, Int8PtrTy, TypeContextDescriptorPtrTy),
+         ATTRS(NoUnwind, ReadOnly))
+
+// MetadataResponse swift_getCanonicalSpecializedMetadata(MetadataRequest request,
+//                                                        Metadata *candidate);
+FUNCTION(GetCanonicalSpecializedMetadata, swift_getCanonicalSpecializedMetadata,
+         SwiftCC, GetCanonicalSpecializedMetadataAvailability,
+         RETURNS(TypeMetadataResponseTy),
+         ARGS(SizeTy, TypeMetadataPtrTy, TypeMetadataPtrPtrTy),
+         ATTRS(NoUnwind, ReadOnly))
+
+// MetadataResponse
+// swift_getCanonicalPrespecializedGenericMetadata(MetadataRequest request,
+//                          const void * const *arguments,
+//                          const TypeContextDescriptor *description,
+//                          swift_once_t *cachedFlag)
+FUNCTION(GetCanonicalPrespecializedGenericMetadata, 
+         swift_getCanonicalPrespecializedGenericMetadata,
+         SwiftCC, GetCanonicalPrespecializedGenericMetadataAvailability,
+         RETURNS(TypeMetadataResponseTy),
+         ARGS(SizeTy, Int8PtrTy, TypeContextDescriptorPtrTy, OnceTy->getPointerTo()),
          ATTRS(NoUnwind, ReadOnly))
 
 // MetadataResponse swift_getOpaqueTypeMetadata(MetadataRequest request,
@@ -721,6 +753,18 @@ FUNCTION(GetAssociatedConformanceWitness,
               TypeMetadataPtrTy,
               ProtocolRequirementStructTy->getPointerTo(),
               ProtocolRequirementStructTy->getPointerTo()),
+         ATTRS(NoUnwind, ReadNone))
+
+// SWIFT_RUNTIME_EXPORT
+//     SWIFT_CC(swift) bool swift_compareProtocolConformanceDescriptors(
+//         const ProtocolConformanceDescriptor *lhs,
+//         const ProtocolConformanceDescriptor *rhs);
+FUNCTION(CompareProtocolConformanceDescriptors, 
+         swift_compareProtocolConformanceDescriptors, SwiftCC, 
+         CompareProtocolConformanceDescriptorsAvailability,
+         RETURNS(Int1Ty),
+         ARGS(ProtocolConformanceDescriptorPtrTy, 
+              ProtocolConformanceDescriptorPtrTy),
          ATTRS(NoUnwind, ReadNone))
 
 // Metadata *swift_getMetatypeMetadata(Metadata *instanceTy);
@@ -1313,6 +1357,12 @@ FUNCTION(ProtocolAddProtocol, protocol_addProtocol,
          ARGS(ProtocolDescriptorPtrTy, ProtocolDescriptorPtrTy),
          ATTRS(NoUnwind))
 
+FUNCTION(ObjCOptSelf, objc_opt_self,
+         C_CC, AlwaysAvailable,
+         RETURNS(ObjCClassPtrTy),
+         ARGS(ObjCClassPtrTy),
+         ATTRS(NoUnwind))
+
 FUNCTION(Malloc, malloc, C_CC, AlwaysAvailable,
          RETURNS(Int8PtrTy),
          ARGS(SizeTy),
@@ -1421,6 +1471,40 @@ FUNCTION(GetTypeByMangledNameInContextInMetadataState,
          RETURNS(TypeMetadataPtrTy),
          ARGS(SizeTy, Int8PtrTy, SizeTy, TypeContextDescriptorPtrTy,
               Int8PtrPtrTy),
+         ATTRS(NoUnwind, ArgMemOnly))
+
+// void *swift_task_alloc(AsyncTask *task, size_t size);
+FUNCTION(TaskAlloc,
+         swift_task_alloc, SwiftCC,
+         ConcurrencyAvailability,
+         RETURNS(Int8PtrTy),
+         ARGS(SwiftTaskPtrTy, SizeTy),
+         ATTRS(NoUnwind, ArgMemOnly))
+
+// void swift_task_dealloc(AsyncTask *task, void *ptr);
+FUNCTION(TaskDealloc,
+         swift_task_dealloc, SwiftCC,
+         ConcurrencyAvailability,
+         RETURNS(VoidTy),
+         ARGS(SwiftTaskPtrTy, Int8PtrTy),
+         ATTRS(NoUnwind, ArgMemOnly))
+
+// void swift_task_cancel(AsyncTask *task);
+FUNCTION(TaskCancel,
+         swift_task_cancel, SwiftCC,
+         ConcurrencyAvailability,
+         RETURNS(VoidTy),
+         ARGS(SwiftTaskPtrTy),
+         ATTRS(NoUnwind, ArgMemOnly))
+
+// AsyncTaskAndContext swift_task_create_f(
+//     size_t flags, AsyncTask *task, AsyncFunctionType<void()> *function,
+//     size_t initialContextSize);
+FUNCTION(TaskCreateFunc,
+         swift_task_create_f, SwiftCC,
+         ConcurrencyAvailability,
+         RETURNS(AsyncTaskAndContextTy),
+         ARGS(SizeTy, SwiftTaskPtrTy, TaskContinuationFunctionPtrTy, SizeTy),
          ATTRS(NoUnwind, ArgMemOnly))
 
 #undef RETURNS

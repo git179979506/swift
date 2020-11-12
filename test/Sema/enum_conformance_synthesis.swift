@@ -61,7 +61,7 @@ func customHashable() {
 enum InvalidCustomHashable {
   case A, B
 
-  var hashValue: String { return "" } // expected-note {{previously declared here}}
+  var hashValue: String { return "" } // expected-error {{invalid redeclaration of synthesized implementation for protocol requirement 'hashValue'}}
 }
 func ==(x: InvalidCustomHashable, y: InvalidCustomHashable) -> String {
   return ""
@@ -178,7 +178,7 @@ enum NoCases: Hashable {}
 
 // rdar://19773050
 private enum Bar<T> {
-  case E(Unknown<T>)  // expected-error {{use of undeclared type 'Unknown'}}
+  case E(Unknown<T>)  // expected-error {{cannot find type 'Unknown' in scope}}
 
   mutating func value() -> T {
     switch self {
@@ -201,7 +201,7 @@ extension Instrument : Equatable {}
 extension Instrument : CaseIterable {}
 
 enum UnusedGeneric<T> {
-    case a, b, c
+  case a, b, c
 }
 extension UnusedGeneric : CaseIterable {}
 
@@ -224,7 +224,12 @@ enum Complex2 {
 }
 extension Complex2 : Hashable {}
 extension Complex2 : CaseIterable {}  // expected-error {{type 'Complex2' does not conform to protocol 'CaseIterable'}}
-extension FromOtherFile: CaseIterable {} // expected-error {{cannot be automatically synthesized in an extension in a different file to the type}} expected-error {{does not conform to protocol 'CaseIterable'}}
+extension FromOtherFile: CaseIterable {} // expected-error {{extension outside of file declaring enum 'FromOtherFile' prevents automatic synthesis of 'allCases' for protocol 'CaseIterable'}}
+extension CaseIterableAcrossFiles: CaseIterable {
+  public static var allCases: [CaseIterableAcrossFiles] {
+    return [ .A ]
+  }
+}
 
 // No explicit conformance and it cannot be derived.
 enum NotExplicitlyHashableAndCannotDerive {
@@ -243,7 +248,7 @@ extension OtherFileNonconforming: Hashable {
   func hash(into hasher: inout Hasher) {}
 }
 // ...but synthesis in a type defined in another file doesn't work yet.
-extension YetOtherFileNonconforming: Equatable {} // expected-error {{cannot be automatically synthesized in an extension in a different file to the type}}
+extension YetOtherFileNonconforming: Equatable {} // expected-error {{extension outside of file declaring enum 'YetOtherFileNonconforming' prevents automatic synthesis of '==' for protocol 'Equatable'}}
 extension YetOtherFileNonconforming: CaseIterable {} // expected-error {{does not conform}}
 
 // Verify that an indirect enum doesn't emit any errors as long as its "leaves"
@@ -288,7 +293,7 @@ case only([NotEquatable]) //expected-note {{associated value type '[NotEquatable
 
 // Conditional conformances should be able to be synthesized
 enum GenericDeriveExtension<T> {
-    case A(T)
+  case A(T)
 }
 extension GenericDeriveExtension: Equatable where T: Equatable {}
 extension GenericDeriveExtension: Hashable where T: Hashable {}
@@ -314,7 +319,7 @@ extension UnusedGenericDeriveExtension: Hashable {}
 // Cross-file synthesis is disallowed for conditional cases just as it is for
 // non-conditional ones.
 extension GenericOtherFileNonconforming: Equatable where T: Equatable {}
-// expected-error@-1{{implementation of 'Equatable' cannot be automatically synthesized in an extension in a different file to the type}}
+// expected-error@-1{{extension outside of file declaring generic enum 'GenericOtherFileNonconforming' prevents automatic synthesis of '==' for protocol 'Equatable'}}
 
 // rdar://problem/41852654
 
@@ -327,9 +332,7 @@ enum ImpliedMain: ImplierMain {
 }
 extension ImpliedOther: ImplierMain {}
 
-
 // FIXME: Remove -verify-ignore-unknown.
-// <unknown>:0: error: unexpected error produced: invalid redeclaration of 'hashValue'
 // <unknown>:0: error: unexpected note produced: candidate has non-matching type '(Foo, Foo) -> Bool'
 // <unknown>:0: error: unexpected note produced: candidate has non-matching type '<T> (Generic<T>, Generic<T>) -> Bool'
 // <unknown>:0: error: unexpected note produced: candidate has non-matching type '(InvalidCustomHashable, InvalidCustomHashable) -> Bool'

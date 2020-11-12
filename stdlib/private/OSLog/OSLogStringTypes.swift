@@ -2,7 +2,7 @@
 //
 // This source file is part of the Swift.org open source project
 //
-// Copyright (c) 2014 - 2019 Apple Inc. and the Swift project authors
+// Copyright (c) 2014 - 2020 Apple Inc. and the Swift project authors
 // Licensed under Apache License v2.0 with Runtime Library Exception
 //
 // See https://swift.org/LICENSE.txt for license information
@@ -10,43 +10,61 @@
 //
 //===----------------------------------------------------------------------===//
 
-// This file defines extensions for interpolating strings into a OSLogMesage.
+// This file defines extensions for interpolating strings into an OSLogMesage.
 // It defines `appendInterpolation` function for String type. It also defines
 // extensions for serializing strings into the argument buffer passed to
 // os_log ABIs. Note that os_log requires passing a stable pointer to an
-// interpolated string. The SPI: `_convertConstStringToUTF8PointerArgument`
-// is used to construct a stable pointer to a (dynamic) string.
+// interpolated string.
 //
-// The `appendInterpolation` function defined in this file accept formatting
-// and privacy options along with the interpolated expression as shown below:
+// The `appendInterpolation` function defined in this file accept privacy and
+// alignment options along with the interpolated expression as shown below:
 //
-//         "\(x, privacy: .public\)"
-//
-// TODO: support formatting options such as left and right padding
-// (e.g. %10s, %-10s).
+//  1.  "\(x, privacy: .private, align: .right\)"
+//  2.  "\(x, align: .right(columns: 10)\)"
 
 extension OSLogInterpolation {
 
-  /// Define interpolation for expressions of type String.
+  /// Defines interpolation for expressions of type String.
+  ///
+  /// Do not call this function directly. It will be called automatically when interpolating
+  /// a value of type `String` in the string interpolations passed to the log APIs.
+  ///
   /// - Parameters:
-  ///  - argumentString: the interpolated expression of type String, which is autoclosured.
-  ///  - privacy: a privacy qualifier which is either private or public. Default is private.
-  ///  TODO: create a specifier to denote auto-inferred privacy level and make it default.
+  ///   - argumentString: The interpolated expression of type String, which is autoclosured.
+  ///   - align: Left or right alignment with the minimum number of columns as
+  ///     defined by the type `OSLogStringAlignment`.
+  ///   - privacy: A privacy qualifier which is either private or public.
+  ///     It is auto-inferred by default.
   @_semantics("constant_evaluable")
   @inlinable
   @_optimize(none)
+  @_semantics("oslog.requires_constant_arguments")
   public mutating func appendInterpolation(
     _ argumentString: @autoclosure @escaping () -> String,
-    privacy: Privacy = .private
+    align: OSLogStringAlignment = .none,
+    privacy: OSLogPrivacy = .auto
   ) {
     guard argumentCount < maxOSLogArgumentCount else { return }
 
-    let isPrivateArgument = isPrivate(privacy)
-    formatString += getStringFormatSpecifier(isPrivateArgument)
-    addStringHeaders(isPrivateArgument)
+    formatString += getStringFormatSpecifier(align, privacy)
 
+    // If minimum column width is specified, append this value first. Note that the
+    // format specifier would use a '*' for width e.g. %*s.
+    if let minColumns = align.minimumColumnWidth {
+      appendAlignmentArgument(minColumns)
+    }
+
+    // If the privacy has a mask, append the mask argument, which is a constant payload.
+    // Note that this should come after the width but before the precision.
+    if privacy.hasMask {
+      appendMaskArgument(privacy)
+    }
+
+    // Append the string argument.
+    addStringHeaders(privacy)
     arguments.append(argumentString)
     argumentCount += 1
+    stringArgumentCount += 1
   }
 
   /// Update preamble and append argument headers based on the parameters of
@@ -54,13 +72,13 @@ extension OSLogInterpolation {
   @_semantics("constant_evaluable")
   @inlinable
   @_optimize(none)
-  internal mutating func addStringHeaders(_ isPrivate: Bool) {
+  internal mutating func addStringHeaders(_ privacy: OSLogPrivacy) {
     // Append argument header.
-    let header = getArgumentHeader(isPrivate: isPrivate, type: .string)
+    let header = getArgumentHeader(privacy: privacy, type: .string)
     arguments.append(header)
 
     // Append number of bytes needed to serialize the argument.
-    let byteCount = sizeForEncoding()
+    let byteCount = pointerSizeInBytes()
     arguments.append(UInt8(byteCount))
 
     // Increment total byte size by the number of bytes needed for this
@@ -68,7 +86,7 @@ extension OSLogInterpolation {
     // two bytes needed for the headers.
     totalBytesForSerializingArguments += byteCount + 2
 
-    preamble = getUpdatedPreamble(isPrivate: isPrivate, isScalar: false)
+    preamble = getUpdatedPreamble(privacy: privacy, isScalar: false)
   }
 
   /// Construct an os_log format specifier from the given parameters.
@@ -78,9 +96,24 @@ extension OSLogInterpolation {
   @_semantics("constant_evaluable")
   @_effects(readonly)
   @_optimize(none)
-  internal func getStringFormatSpecifier(_ isPrivate: Bool) -> String {
-    // TODO: create a specifier to denote auto-inferred privacy.
-    return isPrivate ? "%{private}s" : "%{public}s"
+  internal func getStringFormatSpecifier(
+    _ align: OSLogStringAlignment,
+    _ privacy: OSLogPrivacy
+  ) -> String {
+    var specifier = "%"
+    if let privacySpecifier = privacy.privacySpecifier {
+      specifier += "{"
+      specifier += privacySpecifier
+      specifier += "}"
+    }
+    if case .start = align.anchor {
+      specifier += "-"
+    }
+    if let _ = align.minimumColumnWidth {
+      specifier += "*"
+    }
+    specifier += "s"
+    return specifier
   }
 }
 
@@ -92,7 +125,12 @@ extension OSLogArguments {
   @inlinable
   @_optimize(none)
   internal mutating func append(_ value: @escaping () -> String) {
-    argumentClosures.append({ serialize(value(), at: &$0, using: &$1) })
+    argumentClosures.append({ (position, _, stringArgumentOwners) in
+      serialize(
+        value(),
+        at: &position,
+        storingStringOwnersIn: &stringArgumentOwners)
+    })
   }
 }
 
@@ -101,37 +139,51 @@ extension OSLogArguments {
 /// bitWidth property, and since MemoryLayout is not supported by the constant
 /// evaluator, this function returns the byte size of Int, which must equal the
 /// word length of the target architecture and hence the pointer size.
-/// This function must be constant evaluable.
-@inlinable
-@_optimize(none)
-@_effects(readonly)
-@_semantics("constant_evaluable")
-internal func sizeForEncoding() -> Int {
+/// This function must be constant evaluable. Note that it is marked transparent
+/// instead of @inline(__always) as it is used in optimize(none) functions.
+@_transparent
+@_alwaysEmitIntoClient
+internal func pointerSizeInBytes() -> Int {
   return Int.bitWidth &>> logBitsPerByte
 }
 
 /// Serialize a stable pointer to the string `stringValue` at the buffer location
-/// pointed by `bufferPosition`. When necessary, this function would copy the
-/// string contents to a storage with a stable pointer. If that happens, a reference
-/// to the storage will be added to `storageObjects`.
-@usableFromInline
+/// pointed to by `bufferPosition`.
 @_alwaysEmitIntoClient
+@inline(__always)
 internal func serialize(
   _ stringValue: String,
-  at bufferPosition: inout ByteBufferPointer,
-  using storageObjects: inout StorageObjects
+  at bufferPosition: inout UnsafeMutablePointer<UInt8>,
+  storingStringOwnersIn stringArgumentOwners: inout ObjectStorage<Any>
 ) {
-  let (optionalStorage, bytePointer): (AnyObject?, UnsafeRawPointer) =
-    _convertConstStringToUTF8PointerArgument(
-      stringValue)
+  let stringPointer =
+    getNullTerminatedUTF8Pointer(
+      stringValue,
+      storingStringOwnersIn: &stringArgumentOwners)
 
-  if let storage = optionalStorage {
-    storageObjects.append(storage)
-  }
-
-  let byteCount = sizeForEncoding()
+  let byteCount = pointerSizeInBytes()
   let dest =
     UnsafeMutableRawBufferPointer(start: bufferPosition, count: byteCount)
-  withUnsafeBytes(of: bytePointer) { dest.copyMemory(from: $0) }
+  withUnsafeBytes(of: stringPointer) { dest.copyMemory(from: $0) }
   bufferPosition += byteCount
+}
+
+/// Return a pointer that points to a contiguous sequence of null-terminated,
+/// UTF8 charcters. If necessary, extends the lifetime of `stringValue` by
+/// using `stringArgumentOwners`.
+@_alwaysEmitIntoClient
+@inline(never)
+internal func getNullTerminatedUTF8Pointer(
+  _ stringValue: String,
+  storingStringOwnersIn stringArgumentOwners: inout ObjectStorage<Any>
+) -> UnsafeRawPointer {
+  let (optStorage, bytePointer, _, _, _):
+    (AnyObject?, UnsafeRawPointer, Int, Bool, Bool) =
+     stringValue._deconstructUTF8(scratch: nil)
+  if let storage = optStorage {
+    initializeAndAdvance(&stringArgumentOwners, to: storage)
+  } else {
+    initializeAndAdvance(&stringArgumentOwners, to: stringValue._guts)
+  }
+  return bytePointer
 }

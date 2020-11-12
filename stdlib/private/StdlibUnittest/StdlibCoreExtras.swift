@@ -12,12 +12,12 @@
 
 import SwiftPrivate
 import SwiftPrivateLibcExtras
-#if os(macOS) || os(iOS)
+#if canImport(Darwin)
 import Darwin
-#elseif os(Linux) || os(FreeBSD) || os(PS4) || os(Android) || os(Cygwin) || os(Haiku)
+#elseif canImport(Glibc)
 import Glibc
 #elseif os(Windows)
-import MSVCRT
+import CRT
 #endif
 
 #if _runtime(_ObjC)

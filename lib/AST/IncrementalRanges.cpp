@@ -25,7 +25,6 @@
 #include "swift/AST/SourceFile.h"
 #include "swift/Basic/SourceManager.h"
 #include "swift/Parse/Lexer.h"
-#include "swift/Parse/PersistentParserState.h"
 #include "llvm/Support/YAMLParser.h"
 
 using namespace swift;
@@ -37,7 +36,7 @@ using namespace incremental_ranges;
 
 SerializableSourceLocation::SerializableSourceLocation(
     const SourceLoc loc, const SourceManager &SM) {
-  auto lc = SM.getLineAndColumn(loc);
+  auto lc = SM.getPresumedLineAndColumnForLoc(loc);
   line = lc.first;
   column = lc.second;
 }
@@ -194,24 +193,9 @@ bool SwiftRangesEmitter::emit() const {
 
 void SwiftRangesEmitter::emitRanges(llvm::raw_ostream &out) const {
   SwiftRangesFileContents wholeFileContents(
-      collectSerializedUnparsedRangesByNonPrimary(),
       collectSortedSerializedNoninlinableFunctionBodies());
   llvm::yaml::Output yamlWriter(out);
   yamlWriter << wholeFileContents;
-}
-
-RangesByFilename
-SwiftRangesEmitter::collectSerializedUnparsedRangesByNonPrimary() const {
-  auto rangesByNonprimary = collectUnparsedRanges();
-  std::map<std::string, std::vector<SerializableSourceRange>>
-      serializedRangesByNonprimary;
-  // The driver counts on getting coalescedSortedRanges because it
-  // does binary chop searches
-  for (auto &nonPriAndRanges : rangesByNonprimary)
-    serializedRangesByNonprimary.insert(
-        {nonPriAndRanges.first, serializeRanges(coalesceSortedRanges(sortRanges(
-                                    std::move(nonPriAndRanges.second))))});
-  return serializedRangesByNonprimary;
 }
 
 Ranges
@@ -249,20 +233,6 @@ SwiftRangesEmitter::collectNoninlinableFunctionBodies() const {
   return collector.ranges;
 }
 
-std::map<std::string, std::vector<CharSourceRange>>
-SwiftRangesEmitter::collectUnparsedRanges() const {
-  std::map<std::string, std::vector<CharSourceRange>> rangesByNonprimaryFile;
-  persistentState.forEachDelayedSourceRange(
-      primaryFile, [&](const SourceRange sr) {
-        const auto filename = sourceMgr.getIdentifierForBuffer(
-            sourceMgr.findBufferContainingLoc(sr.Start));
-        const auto csr =
-            Lexer::getCharSourceRangeFromSourceRange(sourceMgr, sr);
-        rangesByNonprimaryFile[filename].push_back(csr);
-      });
-  return rangesByNonprimaryFile;
-}
-
 std::vector<CharSourceRange>
 SwiftRangesEmitter::sortRanges(std::vector<CharSourceRange> ranges) const {
   std::sort(ranges.begin(), ranges.end(),
@@ -291,7 +261,7 @@ std::vector<CharSourceRange> SwiftRangesEmitter::coalesceSortedRanges(
 std::vector<SerializableSourceRange>
 SwiftRangesEmitter::serializeRanges(std::vector<CharSourceRange> ranges) const {
   std::vector<SerializableSourceRange> result;
-  for (const auto r : ranges)
+  for (const auto &r : ranges)
     result.push_back(SerializableSourceRange(r, sourceMgr));
   return result;
 }
@@ -331,9 +301,9 @@ bool CompiledSourceEmitter::emit() {
 // MARK: SwiftRangesFileContents
 //==============================================================================
 
-void SwiftRangesFileContents::dump(const StringRef primaryFilename) const {
-  llvm::errs() << "\n*** Swift range file contents for '" << primaryFilename
-               << "': ***\n";
+void SwiftRangesFileContents::dump(const StringRef primaryInputFilename) const {
+  llvm::errs() << "\n*** Swift range file contents for '"
+               << primaryInputFilename << "': ***\n";
   llvm::yaml::Output dumper(llvm::errs());
   dumper << *const_cast<SwiftRangesFileContents *>(this);
 }

@@ -30,7 +30,7 @@ struct Owl<T : Runcible, U> {
 class Pussycat<T : Runcible, U> {
   init() {} 
 
-  // CHECK: define hidden swiftcc void @"$s16associated_types8PussycatC3eat{{[_0-9a-zA-Z]*}}F"(%swift.opaque* noalias nocapture, %swift.opaque* noalias nocapture, %swift.opaque* noalias nocapture, %T16associated_types8PussycatC* swiftself)
+  // CHECK: define hidden swiftcc void @"$s16associated_types8PussycatC3eat{{[_0-9a-zA-Z]*}}F"(%swift.opaque* noalias nocapture %0, %swift.opaque* noalias nocapture %1, %swift.opaque* noalias nocapture %2, %T16associated_types8PussycatC* swiftself %3)
   func eat(_ what: T.RuncerType.Runcee, and: T.RuncerType, with: T) { }
 }
 
@@ -71,12 +71,13 @@ func testFastRuncible<T: Runcible, U: FastRuncible>(_ t: T, u: U)
   U.RuncerType.Runcee.accelerate()
 }
 
-// CHECK: define hidden swiftcc void @"$s16associated_types16testFastRuncible_1uyx_q_tAA0E0RzAA0dE0R_10RuncerTypeQy_AFRtzr0_lF"(%swift.opaque* noalias nocapture, %swift.opaque* noalias nocapture, %swift.type* %T, %swift.type* %U, i8** %T.Runcible, i8** %U.FastRuncible) #0 {
+// CHECK: define hidden swiftcc void @"$s16associated_types16testFastRuncible_1uyx_q_tAA0E0RzAA0dE0R_10RuncerTypeQy_AFRtzr0_lF"(%swift.opaque* noalias nocapture %0, %swift.opaque* noalias nocapture %1, %swift.type* %T, %swift.type* %U, i8** %T.Runcible, i8** %U.FastRuncible) {{.*}} {
 //   1. Get the type metadata for U.RuncerType.Runcee.
 //     1a. Get the type metadata for U.RuncerType.
 //         Note that we actually look things up in T, which is going to prove unfortunate.
-// CHECK: [[T2:%.*]] = call swiftcc %swift.metadata_response @swift_getAssociatedTypeWitness([[INT]] 0, i8** %T.Runcible, %swift.type* %T, %swift.protocol_requirement* getelementptr{{.*}}i32 12), i32 -1), %swift.protocol_requirement* getelementptr inbounds (<{{.*}}>, <{{.*}}>* @"$s16associated_types8RuncibleMp", i32 0, i32 14)) [[NOUNWIND_READNONE:#.*]]
+// CHECK: [[T2:%.*]] = call swiftcc %swift.metadata_response @swift_getAssociatedTypeWitness([[INT]] 255, i8** %T.Runcible, %swift.type* %T, %swift.protocol_requirement* getelementptr{{.*}}i32 12), i32 -1), %swift.protocol_requirement* getelementptr inbounds (<{{.*}}>, <{{.*}}>* @"$s16associated_types8RuncibleMp", i32 0, i32 14)) [[NOUNWIND_READNONE:#.*]]
 // CHECK-NEXT: %T.RuncerType = extractvalue %swift.metadata_response [[T2]], 0
+// CHECK-NEXT: extractvalue %swift.metadata_response [[T2]], 1
 //   2. Get the witness table for U.RuncerType.Runcee : Speedy
 //     2a. Get the protocol witness table for U.RuncerType : FastRuncer.
 // CHECK-NEXT: %T.RuncerType.FastRuncer = call swiftcc i8** @swift_getAssociatedConformanceWitness(i8** %U.FastRuncible, %swift.type* %U, %swift.type* %T.RuncerType

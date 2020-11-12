@@ -6,6 +6,7 @@
 // RUN: %target-swift-frontend -disable-availability-checking -I %t -module-name A -enforce-exclusivity=checked -Osize -emit-sil -sil-verify-all %s | %FileCheck %s --check-prefix=CHECK --check-prefix=CHECK-%target-ptrsize
 // RUN: %target-swift-frontend -disable-availability-checking -I %t -module-name A -enforce-exclusivity=checked -enable-library-evolution -Osize -emit-sil -sil-verify-all %s | %FileCheck %s --check-prefix=CHECK --check-prefix=CHECK-%target-ptrsize
 
+
 import External
 import External2
 import External3
@@ -228,7 +229,6 @@ func nonResilient() -> some ExternalP2 {
 
 // CHECK-LABEL: sil @$s1A019usePairResilientNonC0yyF : $@convention(thin) () -> ()
 // CHECK: alloc_stack $Pair<MyInt64, @_opaqueReturnTypeOf("$s9External217externalResilientQryF", 0)
-// CHECK: cond_fail
 // CHECK: [[USEP:%.*]] = function_ref @$s1A4usePyyxAA1PRzlFs5Int64V_Tg5
 // CHECK: [[FIRST_MYVALUE3:%.*]] = struct $Int64
 // CHECK: apply [[USEP]]([[FIRST_MYVALUE3]])
@@ -412,9 +412,9 @@ func testIt<T>(cl: (Int64) throws -> T) {
 // CHECK-LABEL: sil shared [noinline] @$s1A16testPartialApplyyyxAA2P4RzlFAA2PAV_Tg5
 // CHECK:  [[PA:%.*]] = alloc_stack $PA
 // CHECK:  store %0 to [[PA]] : $*PA
-// CHECK:  [[F:%.*]] = function_ref @$s1A2PAVAA2P4A2aDP3fooy2ATQzs5Int64VFTW : $@convention(witness_method: P4) (Int64, @in_guaranteed PA) -> @out Int64
-// CHECK:  [[C:%.*]] = partial_apply [callee_guaranteed] [[F]]([[PA]]) : $@convention(witness_method: P4) (Int64, @in_guaranteed PA) -> @out Int64
-// CHECK:  convert_function [[C]] : $@callee_guaranteed (Int64) -> @out Int64 to $@callee_guaranteed (Int64) -> (@out Int64, @error Error)
+// CHECK:  [[F:%.*]] = function_ref @$s1A16testPartialApplyyyxAA2P4RzlF2ATQzs5Int64Vcxcfu_AeGcfu0_AA2PAV_TG5 : $@convention(thin) (Int64, @in_guaranteed PA) -> @out Int64
+// CHECK:  [[C:%.*]] = partial_apply [callee_guaranteed] [[F]]([[PA]]) : $@convention(thin) (Int64, @in_guaranteed PA) -> @out Int64
+// CHECK:  convert_function [[C]] : $@callee_guaranteed (Int64) -> @out Int64 to $@callee_guaranteed @substituted <τ_0_0> (Int64) -> (@out τ_0_0, @error Error) for <Int64>
 @inline(never)
 func testPartialApply<T: P4>(_ t: T) {
   let fun = t.foo

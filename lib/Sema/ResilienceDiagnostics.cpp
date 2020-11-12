@@ -16,6 +16,7 @@
 
 #include "TypeChecker.h"
 #include "TypeCheckAvailability.h"
+#include "TypeCheckAccess.h"
 #include "swift/AST/Attr.h"
 #include "swift/AST/Decl.h"
 #include "swift/AST/DeclContext.h"
@@ -25,111 +26,25 @@
 #include "swift/AST/TypeDeclFinder.h"
 
 using namespace swift;
-using FragileFunctionKind = TypeChecker::FragileFunctionKind;
-
-std::pair<FragileFunctionKind, bool>
-TypeChecker::getFragileFunctionKind(const DeclContext *DC) {
-  for (DC = DC->getLocalContext(); DC && DC->isLocalContext();
-       DC = DC->getParent()) {
-    if (isa<DefaultArgumentInitializer>(DC)) {
-      // Default argument generators of public functions cannot reference
-      // @usableFromInline declarations; all other fragile function kinds
-      // can.
-      auto *VD = cast<ValueDecl>(DC->getInnermostDeclarationDeclContext());
-      auto access =
-        VD->getFormalAccessScope(/*useDC=*/nullptr,
-                                 /*treatUsableFromInlineAsPublic=*/false);
-      return std::make_pair(FragileFunctionKind::DefaultArgument,
-                            !access.isPublic());
-    }
-
-    if (isa<PatternBindingInitializer>(DC))
-      return std::make_pair(FragileFunctionKind::PropertyInitializer,
-                            /*treatUsableFromInlineAsPublic=*/true);
-
-    if (auto *AFD = dyn_cast<AbstractFunctionDecl>(DC)) {
-      // If the function is a nested function, we will serialize its body if
-      // we serialize the parent's body.
-      if (AFD->getDeclContext()->isLocalContext())
-        continue;
-
-      // Bodies of public transparent and always-inline functions are
-      // serialized, so use conservative access patterns.
-      if (AFD->isTransparent())
-        return std::make_pair(FragileFunctionKind::Transparent,
-                              /*treatUsableFromInlineAsPublic=*/true);
-
-      if (AFD->getAttrs().hasAttribute<InlinableAttr>())
-        return std::make_pair(FragileFunctionKind::Inlinable,
-                              /*treatUsableFromInlineAsPublic=*/true);
-
-      if (AFD->getAttrs().hasAttribute<AlwaysEmitIntoClientAttr>())
-        return std::make_pair(FragileFunctionKind::AlwaysEmitIntoClient,
-                              /*treatUsableFromInlineAsPublic=*/true);
-
-      // If a property or subscript is @inlinable, the accessors are
-      // @inlinable also.
-      if (auto accessor = dyn_cast<AccessorDecl>(AFD)) {
-        auto *storage = accessor->getStorage();
-        if (storage->getAttrs().getAttribute<InlinableAttr>())
-          return std::make_pair(FragileFunctionKind::Inlinable,
-                                /*treatUsableFromInlineAsPublic=*/true);
-        if (storage->getAttrs().hasAttribute<AlwaysEmitIntoClientAttr>())
-          return std::make_pair(FragileFunctionKind::AlwaysEmitIntoClient,
-                                /*treatUsableFromInlineAsPublic=*/true);
-      }
-    }
-  }
-
-  llvm_unreachable("Context is not nested inside a fragile function");
-}
-
-/// A uniquely-typed boolean to reduce the chances of accidentally inverting
-/// a check.
-enum class DowngradeToWarning: bool {
-  No,
-  Yes
-};
-
-bool TypeChecker::diagnoseInlinableDeclRef(SourceLoc loc,
-                                           ConcreteDeclRef declRef,
-                                           const DeclContext *DC,
-                                           FragileFunctionKind Kind,
-                                           bool TreatUsableFromInlineAsPublic) {
-  const ValueDecl *D = declRef.getDecl();
-  // Do some important fast-path checks that apply to all cases.
-
-  // Type parameters are OK.
-  if (isa<AbstractTypeParamDecl>(D))
-    return false;
-
-  // Check whether the declaration is accessible.
-  if (diagnoseInlinableDeclRefAccess(loc, D, DC, Kind,
-                                     TreatUsableFromInlineAsPublic))
-    return true;
-
-  // Check whether the declaration comes from a publically-imported module.
-  // Skip this check for accessors because the associated property or subscript
-  // will also be checked, and will provide a better error message.
-  if (!isa<AccessorDecl>(D))
-    if (diagnoseDeclRefExportability(loc, declRef, DC, Kind))
-      return true;
-
-  return false;
-}
 
 bool TypeChecker::diagnoseInlinableDeclRefAccess(SourceLoc loc,
-                                           const ValueDecl *D,
-                                           const DeclContext *DC,
-                                           FragileFunctionKind Kind,
-                                           bool TreatUsableFromInlineAsPublic) {
+                                                 const ValueDecl *D,
+                                                 const ExportContext &where) {
+  auto fragileKind = where.getFragileFunctionKind();
+  if (fragileKind.kind == FragileFunctionKind::None)
+    return false;
+
   // Local declarations are OK.
   if (D->getDeclContext()->isLocalContext())
     return false;
 
-  // Public declarations are OK.
+  auto *DC = where.getDeclContext();
+
+  // Public declarations are OK, even if they're SPI or came from an
+  // implementation-only import. We'll diagnose exportability violations
+  // from diagnoseDeclRefExportability().
   if (D->getFormalAccessScope(/*useDC=*/nullptr,
-                              TreatUsableFromInlineAsPublic).isPublic())
+                              fragileKind.allowUsableFromInline).isPublic())
     return false;
 
   auto &Context = DC->getASTContext();
@@ -137,17 +52,9 @@ bool TypeChecker::diagnoseInlinableDeclRefAccess(SourceLoc loc,
   // Dynamic declarations were mistakenly not checked in Swift 4.2.
   // Do enforce the restriction even in pre-Swift-5 modes if the module we're
   // building is resilient, though.
-  if (D->isObjCDynamic() && !Context.isSwiftVersionAtLeast(5) &&
+  if (D->shouldUseObjCDispatch() && !Context.isSwiftVersionAtLeast(5) &&
       !DC->getParentModule()->isResilient()) {
     return false;
-  }
-
-  // Property initializers that are not exposed to clients are OK.
-  if (auto pattern = dyn_cast<PatternBindingInitializer>(DC)) {
-    auto bindingIndex = pattern->getBindingIndex();
-    auto *varDecl = pattern->getBinding()->getAnchoringVarDecl(bindingIndex);
-    if (!varDecl->isInitExposedToClients())
-      return false;
   }
 
   DowngradeToWarning downgradeToWarning = DowngradeToWarning::No;
@@ -160,7 +67,7 @@ bool TypeChecker::diagnoseInlinableDeclRefAccess(SourceLoc loc,
       downgradeToWarning = DowngradeToWarning::Yes;
   }
 
-  auto diagName = D->getFullName();
+  auto diagName = D->getName();
   bool isAccessor = false;
 
   // Swift 4.2 did not check accessor accessiblity.
@@ -172,7 +79,7 @@ bool TypeChecker::diagnoseInlinableDeclRefAccess(SourceLoc loc,
 
     // For accessors, diagnose with the name of the storage instead of the
     // implicit '_'.
-    diagName = accessor->getStorage()->getFullName();
+    diagName = accessor->getStorage()->getName();
   }
 
   // Swift 5.0 did not check the underlying types of local typealiases.
@@ -188,10 +95,10 @@ bool TypeChecker::diagnoseInlinableDeclRefAccess(SourceLoc loc,
            loc, diagID,
            D->getDescriptiveKind(), diagName,
            D->getFormalAccessScope().accessLevelForDiagnostics(),
-           static_cast<unsigned>(Kind),
+           static_cast<unsigned>(fragileKind.kind),
            isAccessor);
 
-  if (TreatUsableFromInlineAsPublic) {
+  if (fragileKind.allowUsableFromInline) {
     Context.Diags.diagnose(D, diag::resilience_decl_declared_here,
                            D->getDescriptiveKind(), diagName, isAccessor);
   } else {
@@ -202,94 +109,78 @@ bool TypeChecker::diagnoseInlinableDeclRefAccess(SourceLoc loc,
   return (downgradeToWarning == DowngradeToWarning::No);
 }
 
-static bool diagnoseDeclExportability(SourceLoc loc, const ValueDecl *D,
-                                      const SourceFile &userSF,
-                                      FragileFunctionKind fragileKind) {
-  auto definingModule = D->getModuleContext();
-  if (!userSF.isImportedImplementationOnly(definingModule))
+bool
+TypeChecker::diagnoseDeclRefExportability(SourceLoc loc,
+                                          const ValueDecl *D,
+                                          const ExportContext &where) {
+  // Accessors cannot have exportability that's different than the storage,
+  // so skip them for now.
+  if (isa<AccessorDecl>(D))
     return false;
 
-  // TODO: different diagnostics
+  if (!where.mustOnlyReferenceExportedDecls())
+    return false;
+
+  auto definingModule = D->getModuleContext();
+
+  auto downgradeToWarning = DowngradeToWarning::No;
+
+  auto originKind = getDisallowedOriginKind(
+      D, where, downgradeToWarning);
+  if (originKind == DisallowedOriginKind::None)
+    return false;
+
   ASTContext &ctx = definingModule->getASTContext();
-  ctx.Diags.diagnose(loc, diag::inlinable_decl_ref_implementation_only,
-                     D->getDescriptiveKind(), D->getFullName(),
-                     static_cast<unsigned>(fragileKind),
-                     definingModule->getName());
+
+  auto fragileKind = where.getFragileFunctionKind();
+  auto reason = where.getExportabilityReason();
+
+  if (fragileKind.kind == FragileFunctionKind::None) {
+    auto errorOrWarning = downgradeToWarning == DowngradeToWarning::Yes?
+                              diag::decl_from_hidden_module_warn:
+                              diag::decl_from_hidden_module;
+    ctx.Diags.diagnose(loc, errorOrWarning,
+                       D->getDescriptiveKind(),
+                       D->getName(),
+                       static_cast<unsigned>(*reason),
+                       definingModule->getName(),
+                       static_cast<unsigned>(originKind));
+
+    D->diagnose(diag::kind_declared_here, DescriptiveDeclKind::Type);
+  } else {
+    ctx.Diags.diagnose(loc, diag::inlinable_decl_ref_from_hidden_module,
+                       D->getDescriptiveKind(), D->getName(),
+                       static_cast<unsigned>(fragileKind.kind),
+                       definingModule->getName(),
+                       static_cast<unsigned>(originKind));
+  }
   return true;
 }
 
-static bool
-diagnoseGenericArgumentsExportability(SourceLoc loc,
-                                      SubstitutionMap subs,
-                                      const SourceFile &userSF) {
-  bool hadAnyIssues = false;
-  for (ProtocolConformanceRef conformance : subs.getConformances()) {
-    if (!conformance.isConcrete())
-      continue;
-    const ProtocolConformance *concreteConf = conformance.getConcrete();
-
-    SubstitutionMap subConformanceSubs =
-        concreteConf->getSubstitutions(userSF.getParentModule());
-    diagnoseGenericArgumentsExportability(loc, subConformanceSubs, userSF);
-
-    const RootProtocolConformance *rootConf =
-        concreteConf->getRootConformance();
-    ModuleDecl *M = rootConf->getDeclContext()->getParentModule();
-    if (!userSF.isImportedImplementationOnly(M))
-      continue;
-
-    ASTContext &ctx = M->getASTContext();
-    ctx.Diags.diagnose(loc, diag::conformance_from_implementation_only_module,
-                       rootConf->getType(),
-                       rootConf->getProtocol()->getFullName(), 0, M->getName());
-    hadAnyIssues = true;
-  }
-  return hadAnyIssues;
-}
-
-void TypeChecker::diagnoseGenericTypeExportability(SourceLoc Loc, Type T,
-                                                   const DeclContext *DC) {
-  const SourceFile *SF = DC->getParentSourceFile();
-  if (!SF)
-    return;
-
-  // FIXME: It would be nice to highlight just the part of the type that's
-  // problematic, but unfortunately the TypeRepr doesn't have the
-  // information we need and the Type doesn't easily map back to it.
-  if (auto *BGT = dyn_cast<BoundGenericType>(T.getPointer())) {
-    ModuleDecl *useModule = SF->getParentModule();
-    auto subs = T->getContextSubstitutionMap(useModule, BGT->getDecl());
-    (void)diagnoseGenericArgumentsExportability(Loc, subs, *SF);
-  } else if (auto *TAT = dyn_cast<TypeAliasType>(T.getPointer())) {
-    auto subs = TAT->getSubstitutionMap();
-    (void)diagnoseGenericArgumentsExportability(Loc, subs, *SF);
-  }
-}
-
 bool
-TypeChecker::diagnoseDeclRefExportability(SourceLoc loc,
-                                          ConcreteDeclRef declRef,
-                                          const DeclContext *DC,
-                                          FragileFunctionKind fragileKind) {
-  // We're only interested in diagnosing uses from source files.
-  auto userSF = DC->getParentSourceFile();
-  if (!userSF)
+TypeChecker::diagnoseConformanceExportability(SourceLoc loc,
+                                              const RootProtocolConformance *rootConf,
+                                              const ExtensionDecl *ext,
+                                              const ExportContext &where) {
+  if (!where.mustOnlyReferenceExportedDecls())
     return false;
 
-  // If the source file doesn't have any implementation-only imports,
-  // we can fast-path this.  In the current language design, we never
-  // need to consider the possibility of implementation-only imports
-  // from other source files in the module (or indirectly in other modules).
-  // TODO: maybe check whether D is from a bridging header?
-  if (!userSF->hasImplementationOnlyImports())
+  auto originKind = getDisallowedOriginKind(ext, where);
+  if (originKind == DisallowedOriginKind::None)
     return false;
 
-  const ValueDecl *D = declRef.getDecl();
-  if (diagnoseDeclExportability(loc, D, *userSF, fragileKind))
-    return true;
-  if (diagnoseGenericArgumentsExportability(loc, declRef.getSubstitutions(),
-                                            *userSF)) {
-    return true;
-  }
-  return false;
+  ModuleDecl *M = ext->getParentModule();
+  ASTContext &ctx = M->getASTContext();
+
+  auto reason = where.getExportabilityReason();
+  if (!reason.hasValue())
+    reason = ExportabilityReason::General;
+
+  ctx.Diags.diagnose(loc, diag::conformance_from_implementation_only_module,
+                     rootConf->getType(),
+                     rootConf->getProtocol()->getName(),
+                     static_cast<unsigned>(*reason),
+                     M->getName(),
+                     static_cast<unsigned>(originKind));
+  return true;
 }

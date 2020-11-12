@@ -105,8 +105,7 @@ mapTypeOutOfOpenedExistentialContext(CanType t) {
     MakeAbstractConformanceForGenericType());
 
   return std::make_tuple(mappedTy->getCanonicalType(mappedSig),
-                         mappedSig->getCanonicalSignature(),
-                         mappedSubs);
+                         mappedSig.getCanonicalSignature(), mappedSubs);
 }
 
 /// A result plan for an indirectly-returned opened existential value.
@@ -149,11 +148,11 @@ public:
     SubstitutionMap layoutSubs;
     std::tie(layoutTy, layoutSig, layoutSubs)
       = mapTypeOutOfOpenedExistentialContext(resultTy);
-    
-    auto boxLayout = SILLayout::get(SGF.getASTContext(),
-      layoutSig->getCanonicalSignature(),
-      SILField(layoutTy->getCanonicalType(layoutSig), true));
-    
+
+    auto boxLayout =
+        SILLayout::get(SGF.getASTContext(), layoutSig.getCanonicalSignature(),
+                       SILField(layoutTy->getCanonicalType(layoutSig), true));
+
     resultBox = SGF.B.createAllocBox(loc,
       SILBoxType::get(SGF.getASTContext(),
                       boxLayout,
@@ -250,7 +249,8 @@ public:
                                          origType.getType(), substType,
                                          loweredResultTy);
         } else {
-          return Conversion::getOrigToSubst(origType, substType);
+          return Conversion::getOrigToSubst(origType, substType,
+                                            loweredResultTy);
         }
       }();
 
@@ -451,6 +451,30 @@ public:
   }
 };
 
+class ForeignAsyncInitializationPlan final : public ResultPlan {
+  SILLocation loc;
+public:
+  ForeignAsyncInitializationPlan(SILLocation loc) : loc(loc) {}
+  
+  void
+  gatherIndirectResultAddrs(SILGenFunction &SGF, SILLocation loc,
+                            SmallVectorImpl<SILValue> &outList) const override {
+    // TODO: Move values from the continuation result buffer to the individual
+    // out argument buffers, unless we were able to emit the resume buffer
+    // in-place.
+  }
+  
+  RValue finish(SILGenFunction &SGF, SILLocation loc, CanType substType,
+                ArrayRef<ManagedValue> &directResults) override {
+    // There should be no direct results from the call.
+    assert(directResults.empty());
+    
+    // TODO: Get the actual result values from the awaited continuation.
+    // For now, produce an undef RValue.
+    return SGF.emitUndefRValue(loc, substType);
+  }
+};
+
 class ForeignErrorInitializationPlan final : public ResultPlan {
   SILLocation loc;
   LValue lvalue;
@@ -467,13 +491,14 @@ public:
                                  ResultPlanPtr &&subPlan)
       : loc(loc), subPlan(std::move(subPlan)) {
     unsigned errorParamIndex =
-        calleeTypeInfo.foreignError->getErrorParameterIndex();
+        calleeTypeInfo.foreign.error->getErrorParameterIndex();
     auto substFnType = calleeTypeInfo.substFnType;
     SILParameterInfo errorParameter =
         substFnType->getParameters()[errorParamIndex];
     // We assume that there's no interesting reabstraction here beyond a layer
     // of optional.
-    errorPtrType = errorParameter.getArgumentType(SGF.SGM.M, substFnType);
+    errorPtrType = errorParameter.getArgumentType(
+        SGF.SGM.M, substFnType, SGF.getTypeExpansionContext());
     unwrappedPtrType = errorPtrType;
     Type unwrapped = errorPtrType->getOptionalObjectType();
     isOptional = (bool) unwrapped;
@@ -542,49 +567,56 @@ public:
 /// If the initialization is non-null, the result plan will emit into it.
 ResultPlanPtr ResultPlanBuilder::buildTopLevelResult(Initialization *init,
                                                      SILLocation loc) {
-  // First check if we do not have a foreign error. If we don't, just call
-  // build.
-  auto foreignError = calleeTypeInfo.foreignError;
-  if (!foreignError) {
+  // First check if we have a foreign error and/or async convention.
+  if (auto foreignAsync = calleeTypeInfo.foreign.async) {
+    // Create a result plan that gets the result schema from the completion
+    // handler callback's arguments.
+    // completion handler.
+    return ResultPlanPtr(new ForeignAsyncInitializationPlan(loc));
+    
+  } else if (auto foreignError = calleeTypeInfo.foreign.error) {
+    // Handle the foreign error first.
+    //
+    // The plan needs to be built using the formal result type after foreign-error
+    // adjustment.
+    switch (foreignError->getKind()) {
+    // These conventions make the formal result type ().
+    case ForeignErrorConvention::ZeroResult:
+    case ForeignErrorConvention::NonZeroResult:
+      assert(calleeTypeInfo.substResultType->isVoid());
+      allResults.clear();
+      break;
+
+    // These conventions leave the formal result alone.
+    case ForeignErrorConvention::ZeroPreservedResult:
+    case ForeignErrorConvention::NonNilError:
+      break;
+
+    // This convention changes the formal result to the optional object type; we
+    // need to make our own make SILResultInfo array.
+    case ForeignErrorConvention::NilResult: {
+      assert(allResults.size() == 1);
+      auto substFnTy = calleeTypeInfo.substFnType;
+      CanType objectType = allResults[0]
+                               .getReturnValueType(SGF.SGM.M, substFnTy,
+                                                   SGF.getTypeExpansionContext())
+                               .getOptionalObjectType();
+      SILResultInfo optResult = allResults[0].getWithInterfaceType(objectType);
+      allResults.clear();
+      allResults.push_back(optResult);
+      break;
+    }
+    }
+
+    ResultPlanPtr subPlan = build(init, calleeTypeInfo.origResultType.getValue(),
+                                  calleeTypeInfo.substResultType);
+    return ResultPlanPtr(new ForeignErrorInitializationPlan(
+        SGF, loc, calleeTypeInfo, std::move(subPlan)));
+  } else {
+    // Otherwise, we can just call build.
     return build(init, calleeTypeInfo.origResultType.getValue(),
                  calleeTypeInfo.substResultType);
   }
-
-  // Otherwise, handle the foreign error first.
-  //
-  // The plan needs to be built using the formal result type after foreign-error
-  // adjustment.
-  switch (foreignError->getKind()) {
-  // These conventions make the formal result type ().
-  case ForeignErrorConvention::ZeroResult:
-  case ForeignErrorConvention::NonZeroResult:
-    assert(calleeTypeInfo.substResultType->isVoid());
-    allResults.clear();
-    break;
-
-  // These conventions leave the formal result alone.
-  case ForeignErrorConvention::ZeroPreservedResult:
-  case ForeignErrorConvention::NonNilError:
-    break;
-
-  // This convention changes the formal result to the optional object type; we
-  // need to make our own make SILResultInfo array.
-  case ForeignErrorConvention::NilResult: {
-    assert(allResults.size() == 1);
-    auto substFnTy = calleeTypeInfo.substFnType;
-    CanType objectType = allResults[0].getReturnValueType(SGF.SGM.M, substFnTy)
-                                      .getOptionalObjectType();
-    SILResultInfo optResult = allResults[0].getWithInterfaceType(objectType);
-    allResults.clear();
-    allResults.push_back(optResult);
-    break;
-  }
-  }
-
-  ResultPlanPtr subPlan = build(init, calleeTypeInfo.origResultType.getValue(),
-                                calleeTypeInfo.substResultType);
-  return ResultPlanPtr(new ForeignErrorInitializationPlan(
-      SGF, loc, calleeTypeInfo, std::move(subPlan)));
 }
 
 /// Build a result plan for the results of an apply.
@@ -608,8 +640,9 @@ ResultPlanPtr ResultPlanBuilder::build(Initialization *init,
   if (init && init->canPerformInPlaceInitialization() &&
       SGF.silConv.isSILIndirect(result) &&
       !SGF.getLoweredType(substType).getAddressType().hasAbstractionDifference(
-            calleeTypeInfo.getOverrideRep(),
-            result.getSILStorageType(SGF.SGM.M, calleeTy))) {
+          calleeTypeInfo.getOverrideRep(),
+          result.getSILStorageType(SGF.SGM.M, calleeTy,
+                                   SGF.getTypeExpansionContext()))) {
     return ResultPlanPtr(new InPlaceInitializationResultPlan(init));
   }
 
@@ -624,8 +657,11 @@ ResultPlanPtr ResultPlanBuilder::build(Initialization *init,
   // then we need to evaluate the arguments first in order to have access to
   // the opened Self type. A special result plan defers allocating the stack
   // slot to the point the call is emitted.
-  if (result.getReturnValueType(SGF.SGM.M, calleeTy)->hasOpenedExistential()
-      && SGF.silConv.isSILIndirect(result)) {
+  if (result
+          .getReturnValueType(SGF.SGM.M, calleeTy,
+                              SGF.getTypeExpansionContext())
+          ->hasOpenedExistential() &&
+      SGF.silConv.isSILIndirect(result)) {
     return ResultPlanPtr(
       new IndirectOpenedSelfResultPlan(SGF, origType, substType));
   }
@@ -633,8 +669,8 @@ ResultPlanPtr ResultPlanBuilder::build(Initialization *init,
   // Create a temporary if the result is indirect.
   std::unique_ptr<TemporaryInitialization> temporary;
   if (SGF.silConv.isSILIndirect(result)) {
-    auto &resultTL = SGF.getTypeLowering(
-                               result.getReturnValueType(SGF.SGM.M, calleeTy));
+    auto &resultTL = SGF.getTypeLowering(result.getReturnValueType(
+        SGF.SGM.M, calleeTy, SGF.getTypeExpansionContext()));
     temporary = SGF.emitTemporary(loc, resultTL);
   }
 

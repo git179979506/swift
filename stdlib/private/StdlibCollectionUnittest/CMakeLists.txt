@@ -12,6 +12,7 @@ add_swift_target_library(swiftStdlibCollectionUnittest ${SWIFT_STDLIB_LIBRARY_BU
   CheckRangeReplaceableSliceType.swift
   CheckSequenceInstance.swift
   CheckSequenceType.swift
+  COWLoggingArray.swift
   LoggingWrappers.swift
   MinimalCollections.swift
   RangeSelection.swift
@@ -20,9 +21,10 @@ add_swift_target_library(swiftStdlibCollectionUnittest ${SWIFT_STDLIB_LIBRARY_BU
   SWIFT_MODULE_DEPENDS StdlibUnittest
   SWIFT_MODULE_DEPENDS_LINUX Glibc
   SWIFT_MODULE_DEPENDS_FREEBSD Glibc
+  SWIFT_MODULE_DEPENDS_OPENBSD Glibc
   SWIFT_MODULE_DEPENDS_CYGWIN Glibc
   SWIFT_MODULE_DEPENDS_HAIKU Glibc
-  SWIFT_MODULE_DEPENDS_WINDOWS MSVCRT
+  SWIFT_MODULE_DEPENDS_WINDOWS CRT
   SWIFT_COMPILE_FLAGS ${swift_stdlib_unittest_compile_flags} ${SWIFT_STANDARD_LIBRARY_SWIFT_FLAGS}
   INSTALL_IN_COMPONENT stdlib-experimental
   DARWIN_INSTALL_NAME_DIR "${SWIFT_DARWIN_STDLIB_PRIVATE_INSTALL_NAME_DIR}")

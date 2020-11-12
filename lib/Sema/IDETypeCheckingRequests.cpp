@@ -15,11 +15,10 @@
 #include "swift/AST/NameLookup.h"
 #include "swift/Basic/SourceManager.h"
 #include "swift/Frontend/Frontend.h"
+#include "swift/Sema/ConstraintSystem.h"
 #include "swift/Sema/IDETypeCheckingRequests.h"
 #include "swift/Subsystems.h"
 #include "TypeChecker.h"
-#include "ConstraintGraph.h"
-#include "ConstraintSystem.h"
 
 using namespace swift;
 
@@ -56,7 +55,6 @@ static bool isExtensionAppliedInternal(const DeclContext *DC, Type BaseTy,
   if (!ED->isConstrainedExtension())
     return true;
 
-  (void)swift::createTypeChecker(DC->getASTContext());
   GenericSignature genericSig = ED->getGenericSignature();
   SubstitutionMap substMap = BaseTy->getContextSubstitutionMap(
       DC->getParentModule(), ED->getExtendedNominal());
@@ -66,6 +64,9 @@ static bool isExtensionAppliedInternal(const DeclContext *DC, Type BaseTy,
 
 static bool isMemberDeclAppliedInternal(const DeclContext *DC, Type BaseTy,
                                         const ValueDecl *VD) {
+  if (BaseTy->isExistentialType() && VD->isStatic())
+    return false;
+
   // We can't leak type variables into another constraint system.
   // We can't do anything if the base type has unbound generic parameters.
   if (BaseTy->hasTypeVariable() || BaseTy->hasUnboundGenericType()||
@@ -85,7 +86,7 @@ static bool isMemberDeclAppliedInternal(const DeclContext *DC, Type BaseTy,
                                          /*isExtension=*/false);
 }
 
-llvm::Expected<bool>
+bool
 IsDeclApplicableRequest::evaluate(Evaluator &evaluator,
                                   DeclApplicabilityOwner Owner) const {
   if (auto *VD = dyn_cast<ValueDecl>(Owner.ExtensionOrMember)) {
@@ -97,7 +98,7 @@ IsDeclApplicableRequest::evaluate(Evaluator &evaluator,
   }
 }
 
-llvm::Expected<bool>
+bool
 TypeRelationCheckRequest::evaluate(Evaluator &evaluator,
                                    TypeRelationCheckInput Owner) const {
   Optional<constraints::ConstraintKind> CKind;
@@ -113,7 +114,7 @@ TypeRelationCheckRequest::evaluate(Evaluator &evaluator,
                                              *CKind, Owner.DC);
 }
 
-llvm::Expected<TypePair>
+TypePair
 RootAndResultTypeOfKeypathDynamicMemberRequest::evaluate(Evaluator &evaluator,
                                               SubscriptDecl *subscript) const {
   if (!isValidKeyPathDynamicMemberLookup(subscript))
@@ -127,11 +128,4 @@ RootAndResultTypeOfKeypathDynamicMemberRequest::evaluate(Evaluator &evaluator,
   assert(!genericArgs.empty() && genericArgs.size() == 2 &&
          "invalid keypath dynamic member");
   return TypePair(genericArgs[0], genericArgs[1]);
-}
-
-llvm::Expected<bool>
-HasDynamicMemberLookupAttributeRequest::evaluate(Evaluator &evaluator,
-                                                 TypeBase *ty) const {
-  llvm::DenseMap<CanType, bool> DynamicMemberLookupCache;
-  return hasDynamicMemberLookupAttribute(Type(ty), DynamicMemberLookupCache);
 }

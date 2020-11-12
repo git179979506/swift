@@ -1,3 +1,4 @@
+set_swift_llvm_is_available()
 add_swift_host_library(swiftSILGen STATIC
   ArgumentSource.cpp
   Cleanup.cpp
@@ -28,6 +29,7 @@ add_swift_host_library(swiftSILGen STATIC
   SILGenPattern.cpp
   SILGenPoly.cpp
   SILGenProlog.cpp
+  SILGenRequests.cpp
   SILGenStmt.cpp
   SILGenThunk.cpp
   SILGenType.cpp)

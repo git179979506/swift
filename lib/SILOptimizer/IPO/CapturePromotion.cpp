@@ -160,6 +160,8 @@ public:
     return !(*this == RHS);
   }
 
+  ReachingBlockSet(const ReachingBlockSet &RHS)
+      : Bits(RHS.Bits), NumBitWords(RHS.NumBitWords) {}
   const ReachingBlockSet &operator=(const ReachingBlockSet &RHS) {
     assert(NumBitWords == RHS.NumBitWords && "mismatched sets");
     for (size_t i = 0, e = NumBitWords; i != e; ++i)
@@ -337,10 +339,7 @@ computeNewArgInterfaceTypes(SILFunction *F, IndicesSet &PromotableIndices,
 
   LLVM_DEBUG(llvm::dbgs() << "Preparing New Args!\n");
 
-  auto fnTy = F->getLoweredFunctionType();
-
   auto &Types = F->getModule().Types;
-  Lowering::GenericContextScope scope(Types, fnTy->getInvocationGenericSignature());
 
   // For each parameter in the old function...
   for (unsigned Index : indices(Parameters)) {
@@ -363,16 +362,16 @@ computeNewArgInterfaceTypes(SILFunction *F, IndicesSet &PromotableIndices,
     // Perform the proper conversions and then add it to the new parameter list
     // for the type.
     assert(!param.isFormalIndirect());
-    auto paramTy = param.getSILStorageType(fnConv.silConv.getModule(),
-                                           fnConv.funcTy);
+    auto paramTy =
+        param.getSILStorageType(fnConv.silConv.getModule(), fnConv.funcTy,
+                                TypeExpansionContext::minimal());
     auto paramBoxTy = paramTy.castTo<SILBoxType>();
     assert(paramBoxTy->getLayout()->getFields().size() == 1
            && "promoting compound box not implemented yet");
     auto paramBoxedTy =
         getSILBoxFieldType(TypeExpansionContext(*F), paramBoxTy, Types, 0);
     assert(expansion == F->getResilienceExpansion());
-    auto &paramTL =
-        Types.getTypeLowering(paramBoxedTy, TypeExpansionContext(*F));
+    auto &paramTL = Types.getTypeLowering(paramBoxedTy, *F);
     ParameterConvention convention;
     if (paramTL.isAddressOnly()) {
       convention = ParameterConvention::Indirect_In;
@@ -431,7 +430,7 @@ ClosureCloner::initCloned(SILOptFunctionBuilder &FunctionBuilder,
       OrigFTI->getInvocationGenericSignature(), OrigFTI->getExtInfo(),
       OrigFTI->getCoroutineKind(), OrigFTI->getCalleeConvention(),
       ClonedInterfaceArgTys, OrigFTI->getYields(), OrigFTI->getResults(),
-      OrigFTI->getOptionalErrorResult(), SubstitutionMap(), false,
+      OrigFTI->getOptionalErrorResult(), SubstitutionMap(), SubstitutionMap(),
       M.getASTContext(), OrigFTI->getWitnessMethodConformanceOrInvalid());
 
   assert((Orig->isTransparent() || Orig->isBare() || Orig->getLocation())
@@ -493,7 +492,7 @@ ClosureCloner::populateCloned() {
     // a non-trivial value. We know that our value is not written to and it does
     // not escape. The use of a borrow enforces this.
     if (Cloned->hasOwnership() &&
-        MappedValue.getOwnershipKind() != ValueOwnershipKind::None) {
+        MappedValue.getOwnershipKind() != OwnershipKind::None) {
       SILLocation Loc(const_cast<ValueDecl *>((*I)->getDecl()));
       MappedValue = getBuilder().emitBeginBorrowOperation(Loc, MappedValue);
     }
@@ -583,8 +582,7 @@ void ClosureCloner::visitDestroyValueInst(DestroyValueInst *Inst) {
 
       // If ownership is enabled, then we must emit a begin_borrow for any
       // non-trivial value.
-      if (F.hasOwnership() &&
-          Value.getOwnershipKind() != ValueOwnershipKind::None) {
+      if (F.hasOwnership() && Value.getOwnershipKind() != OwnershipKind::None) {
         auto *BBI = cast<BeginBorrowInst>(Value);
         Value = BBI->getOperand();
         B.emitEndBorrowOperation(Inst->getLoc(), BBI);
@@ -650,7 +648,7 @@ void ClosureCloner::visitLoadBorrowInst(LoadBorrowInst *LI) {
     // the loads get mapped to uses of the new object type argument.
     //
     // We assume that the value is already guaranteed.
-    assert(Val.getOwnershipKind().isCompatibleWith(ValueOwnershipKind::Guaranteed) &&
+    assert(Val.getOwnershipKind().isCompatibleWith(OwnershipKind::Guaranteed) &&
            "Expected argument value to be guaranteed");
     recordFoldedValue(LI, Val);
     return;
@@ -692,7 +690,7 @@ void ClosureCloner::visitLoadInst(LoadInst *LI) {
     // struct_extract of the new passed in value. The value should be borrowed
     // already, so we can just extract the value.
     assert(!getBuilder().getFunction().hasOwnership() ||
-           Val.getOwnershipKind().isCompatibleWith(ValueOwnershipKind::Guaranteed));
+           Val.getOwnershipKind().isCompatibleWith(OwnershipKind::Guaranteed));
     Val = getBuilder().emitStructExtract(LI->getLoc(), Val, SEAI->getField(),
                                          LI->getType());
 
@@ -1201,7 +1199,7 @@ constructClonedFunction(SILOptFunctionBuilder &FuncBuilder,
 /// 2. We only see a mark_uninitialized when paired with an (alloc_box,
 ///    project_box). e.x.:
 ///
-///       (mark_uninitialized (project_box (alloc_box)))
+///       (project_box (mark_uninitialized (alloc_box)))
 ///
 /// The asserts are to make sure that if the initial safety condition check
 /// is changed, this code is changed as well.
@@ -1213,15 +1211,16 @@ static SILValue getOrCreateProjectBoxHelper(SILValue PartialOperand) {
   }
 
   // Otherwise, handle the alloc_box case. If we have a mark_uninitialized on
-  // the box, we create the project value through that.
+  // the box, we know that we will have a project_box of that value due to SIL
+  // verifier invariants.
   SingleValueInstruction *Box = cast<AllocBoxInst>(PartialOperand);
-  if (auto *Op = Box->getSingleUse()) {
-    if (auto *MUI = dyn_cast<MarkUninitializedInst>(Op->getUser())) {
-      Box = MUI;
+  if (auto *MUI = Box->getSingleUserOfType<MarkUninitializedInst>()) {
+    if (auto *PBI = MUI->getSingleUserOfType<ProjectBoxInst>()) {
+      return PBI;
     }
   }
 
-  // Just return a project_box.
+  // Otherwise, create a new project_box.
   SILBuilderWithScope B(std::next(Box->getIterator()));
   return B.createProjectBox(Box->getLoc(), Box, 0);
 }
@@ -1323,7 +1322,8 @@ processPartialApplyInst(SILOptFunctionBuilder &FuncBuilder,
     // alloc_box. Otherwise, it is on the specific iterated copy_value that we
     // started with.
     SILParameterInfo CPInfo = CalleePInfo[Index - NumIndirectResults];
-    assert(calleeConv.getSILType(CPInfo) == Box->getType() &&
+    assert(calleeConv.getSILType(CPInfo, B.getTypeExpansionContext()) ==
+               Box->getType() &&
            "SILType of parameter info does not match type of parameter");
     releasePartialApplyCapturedArg(B, PAI->getLoc(), Box, CPInfo);
     ++NumCapturesPromoted;

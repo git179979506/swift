@@ -156,7 +156,7 @@ class Foo {
     return x
   }
  
-  // CHECK-LABEL: sil private [ossa] @globalinit_33_E52D764B1F2009F2390B2B8DF62DAEB8_func0
+  // CHECK-LABEL: sil private [global_init_once_fn] [ossa] @{{.*}}WZ
   // CHECK:         string_literal utf8 "Foo" 
   static let x = Foo(int:0)
 
@@ -236,16 +236,18 @@ class ReabstractDefaultArgument<T> {
 
 // CHECK-LABEL: sil hidden [ossa] @$s17default_arguments32testDefaultArgumentReabstractionyyF
 // function_ref default_arguments.ReabstractDefaultArgument.__allocating_init <A>(default_arguments.ReabstractDefaultArgument<A>.Type)(a : (A, A) -> Swift.Bool) -> default_arguments.ReabstractDefaultArgument<A>
-// CHECK: [[FN:%.*]] = function_ref @$s17default_arguments25ReabstractDefaultArgument{{.*}} : $@convention(thin) <τ_0_0> () -> @owned @callee_guaranteed (@in_guaranteed τ_0_0, @in_guaranteed τ_0_0) -> Bool
-// CHECK-NEXT: [[RESULT:%.*]] = apply [[FN]]<Int>() : $@convention(thin) <τ_0_0> () -> @owned @callee_guaranteed (@in_guaranteed τ_0_0, @in_guaranteed τ_0_0) -> Bool
+// CHECK: [[FN:%.*]] = function_ref @$s17default_arguments25ReabstractDefaultArgument{{.*}} : $@convention(thin) <τ_0_0> () -> @owned @callee_guaranteed @substituted <τ_0_0, τ_0_1> (@in_guaranteed τ_0_0, @in_guaranteed τ_0_1) -> Bool for <τ_0_0, τ_0_0>
+// CHECK-NEXT: [[RESULT:%.*]] = apply [[FN]]<Int>() : $@convention(thin) <τ_0_0> () -> @owned @callee_guaranteed @substituted <τ_0_0, τ_0_1> (@in_guaranteed τ_0_0, @in_guaranteed τ_0_1) -> Bool for <τ_0_0, τ_0_0>
+// CHECK-NEXT: [[RESULT_CONV:%.*]] = convert_function [[RESULT]]
 // CHECK-NEXT: function_ref reabstraction thunk helper from @escaping @callee_guaranteed (@in_guaranteed Swift.Int, @in_guaranteed Swift.Int) -> (@unowned Swift.Bool) to @escaping @callee_guaranteed (@unowned Swift.Int, @unowned Swift.Int) -> (@unowned Swift.Bool)
 // CHECK-NEXT: [[THUNK:%.*]] = function_ref @$sS2iSbIegnnd_S2iSbIegyyd_TR : $@convention(thin) (Int, Int, @guaranteed @callee_guaranteed (@in_guaranteed Int, @in_guaranteed Int) -> Bool) -> Bool
-// CHECK-NEXT: [[FN:%.*]] = partial_apply [callee_guaranteed] [[THUNK]]([[RESULT]]) : $@convention(thin) (Int, Int, @guaranteed @callee_guaranteed (@in_guaranteed Int, @in_guaranteed Int) -> Bool) -> Bool
+// CHECK-NEXT: [[FN:%.*]] = partial_apply [callee_guaranteed] [[THUNK]]([[RESULT_CONV]]) : $@convention(thin) (Int, Int, @guaranteed @callee_guaranteed (@in_guaranteed Int, @in_guaranteed Int) -> Bool) -> Bool
 // CHECK-NEXT: [[CONV_FN:%.*]] = convert_escape_to_noescape [not_guaranteed] [[FN]]
 // function_ref reabstraction thunk helper from @callee_guaranteed (@unowned Swift.Int, @unowned Swift.Int) -> (@unowned Swift.Bool) to @callee_guaranteed (@in_guaranteed Swift.Int, @in_guaranteed Swift.Int) -> (@unowned Swift.Bool)
 // CHECK: [[THUNK:%.*]] = function_ref @$sS2iSbIgyyd_S2iSbIegnnd_TR : $@convention(thin) (@in_guaranteed Int, @in_guaranteed Int, @noescape @callee_guaranteed (Int, Int) -> Bool) -> Bool
 // CHECK-NEXT: [[FN:%.*]] = partial_apply [callee_guaranteed] [[THUNK]]([[CONV_FN]]) : $@convention(thin) (@in_guaranteed Int, @in_guaranteed Int, @noescape @callee_guaranteed (Int, Int) -> Bool) -> Bool
-// CHECK-NEXT: [[CONV_FN:%.*]] = convert_escape_to_noescape [not_guaranteed] [[FN]]
+// CHECK-NEXT: [[CONV_FN_0:%.*]] = convert_function [[FN]]
+// CHECK-NEXT: [[CONV_FN:%.*]] = convert_escape_to_noescape [not_guaranteed] [[CONV_FN_0]]
 // CHECK: [[INITFN:%[0-9]+]] = function_ref @$s17default_arguments25ReabstractDefaultArgumentC{{[_0-9a-zA-Z]*}}fC
 // CHECK-NEXT: apply [[INITFN]]<Int>([[CONV_FN]], 
 
@@ -431,3 +433,13 @@ func testCallableWithDefault(_ x: CallableWithDefault) {
   // CHECK: apply [[CALL_AS_FN]]([[I]], [[STR]], {{%[0-9]+}})
   x(y: 5)
 }
+
+// FIXME: Arguably we shouldn't allow calling a constructor like this, as
+// we usually require the user write an explicit '.init'.
+struct WeirdUMEInitCase {
+  static let ty = WeirdUMEInitCase.self
+  init(_ x: Int = 0) {}
+}
+
+let _: WeirdUMEInitCase = .ty()
+let _: WeirdUMEInitCase = .ty(5)

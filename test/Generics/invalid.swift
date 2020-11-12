@@ -1,17 +1,10 @@
 // RUN: %target-typecheck-verify-swift
 
-func bet() where A : B {} // expected-error {{'where' clause cannot be attached to a non-generic declaration}}
+protocol he where A : B { // expected-error {{cannot find type 'A' in scope}}
+  // expected-error@-1 {{cannot find type 'B' in scope}}
 
-typealias gimel where A : B // expected-error {{'where' clause cannot be attached to a non-generic declaration}}
-// expected-error@-1 {{expected '=' in type alias declaration}}
-
-class dalet where A : B {} // expected-error {{'where' clause cannot be attached to a non-generic declaration}}
-
-protocol he where A : B { // expected-error {{use of undeclared type 'A'}}
-  // expected-error@-1 {{use of undeclared type 'B'}}
-
-  associatedtype vav where A : B // expected-error{{use of undeclared type 'A'}}
-  // expected-error@-1 {{use of undeclared type 'B'}}
+  associatedtype vav where A : B // expected-error{{cannot find type 'A' in scope}}
+  // expected-error@-1 {{cannot find type 'B' in scope}}
 }
 
 
@@ -86,7 +79,7 @@ func badDiagnostic3() {
 // Crash with missing nested type inside concrete type
 class OuterGeneric<T> {
   class InnerGeneric<U> where U:OuterGeneric<T.NoSuchType> {
-  // expected-error@-1 {{'NoSuchType' is not a member type of 'T'}}
+  // expected-error@-1 {{'NoSuchType' is not a member type of type 'T'}}
     func method() {
       _ = method
     }
@@ -96,11 +89,11 @@ class OuterGeneric<T> {
 // Crash with missing types in requirements.
 protocol P1 {
   associatedtype A where A == ThisTypeDoesNotExist
-  // expected-error@-1{{use of undeclared type 'ThisTypeDoesNotExist'}}
+  // expected-error@-1{{cannot find type 'ThisTypeDoesNotExist' in scope}}
   associatedtype B where ThisTypeDoesNotExist == B
-  // expected-error@-1{{use of undeclared type 'ThisTypeDoesNotExist'}}
+  // expected-error@-1{{cannot find type 'ThisTypeDoesNotExist' in scope}}
   associatedtype C where ThisTypeDoesNotExist == ThisTypeDoesNotExist
-  // expected-error@-1 2{{use of undeclared type 'ThisTypeDoesNotExist'}}
+  // expected-error@-1 2{{cannot find type 'ThisTypeDoesNotExist' in scope}}
 }
 
 // Diagnostic referred to the wrong type - <rdar://problem/33604221>
@@ -114,10 +107,10 @@ class P<N> {
 
 // SR-5579
 protocol Foo {
-    associatedtype Bar where Bar.Nonsense == Int // expected-error{{'Nonsense' is not a member type of 'Self.Bar'}}
+    associatedtype Bar where Bar.Nonsense == Int // expected-error{{'Nonsense' is not a member type of type 'Self.Bar'}}
 }
 
-protocol Wibble : Foo where Bar.EvenMoreNonsense == Int { } // expected-error{{'EvenMoreNonsense' is not a member type of 'Self.Bar'}}
+protocol Wibble : Foo where Bar.EvenMoreNonsense == Int { } // expected-error{{'EvenMoreNonsense' is not a member type of type 'Self.Bar'}}
 
 // rdar://45271500 - failure to emit a diagnostic
 enum Cat<A> {}

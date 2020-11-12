@@ -11,20 +11,16 @@
 
 from __future__ import print_function
 
-import argparse
 import multiprocessing
 import os
 import shutil
 import sys
 
-from swift_build_support.swift_build_support import (
-    arguments,
-    shell
-)
-from swift_build_support.swift_build_support.SwiftBuildSupport import \
-    SWIFT_SOURCE_ROOT
-from swift_build_support.swift_build_support.targets import \
-    StdlibDeploymentTarget
+from build_swift.build_swift import argparse
+from build_swift.build_swift.constants import SWIFT_SOURCE_ROOT
+
+from swift_build_support.swift_build_support import shell
+from swift_build_support.swift_build_support.targets import StdlibDeploymentTarget
 
 
 TEST_MODES = [
@@ -47,8 +43,19 @@ SWIFT_SOURCE_DIR = os.path.join(SWIFT_SOURCE_ROOT, 'swift')
 TEST_SOURCE_DIR = os.path.join(SWIFT_SOURCE_DIR, 'test')
 VALIDATION_TEST_SOURCE_DIR = os.path.join(SWIFT_SOURCE_DIR, 'validation-test')
 
-LIT_BIN_DEFAULT = os.path.join(SWIFT_SOURCE_ROOT, 'llvm',
+
+def _get_default_llvm_source_dir():
+    legacy_llvm_dir_path = os.path.join(SWIFT_SOURCE_ROOT, 'llvm')
+    if os.path.isdir(legacy_llvm_dir_path):
+        return legacy_llvm_dir_path
+    return os.path.join(SWIFT_SOURCE_ROOT, 'llvm-project', 'llvm')
+
+
+# Default path for "lit.py" executable.
+LIT_BIN_DEFAULT = os.path.join(os.environ.get("LLVM_SOURCE_DIR",
+                                              _get_default_llvm_source_dir()),
                                'utils', 'lit', 'lit.py')
+
 host_target = StdlibDeploymentTarget.host_target().name
 
 
@@ -119,12 +126,18 @@ def main():
                         choices=["true", "verbose", "skip"], default='true',
                         help="build test dependencies before running tests "
                              "(default: true)")
+    parser.add_argument("--build-jobs",
+                        type=int,
+                        help="The number of parallel build jobs to use")
     parser.add_argument("--target",
-                        type=arguments.type.shell_split,
-                        action=arguments.action.concat,
+                        type=argparse.types.ShellSplitType(),
+                        action=argparse.actions.AppendAction,
                         dest="targets",
                         help="stdlib deployment targets to test. Accept "
                              "multiple (default: " + host_target + ")")
+    parser.add_argument("--filter", type=str, metavar="REGEX",
+                        help="only run tests with paths matching the given "
+                             "regular expression")
     parser.add_argument("--mode",
                         choices=TEST_MODES, default='optimize_none',
                         help="test mode (default: optimize_none)")
@@ -132,8 +145,8 @@ def main():
                         choices=TEST_SUBSETS, default='primary',
                         help="test subset (default: primary)")
     parser.add_argument("--param",
-                        type=arguments.type.shell_split,
-                        action=arguments.action.concat,
+                        type=argparse.types.ShellSplitType(),
+                        action=argparse.actions.AppendAction,
                         default=[],
                         help="key=value parameters they are directly passed "
                              "to lit command in addition to `mode` and "
@@ -150,7 +163,7 @@ def main():
     args = parser.parse_args()
 
     targets = args.targets
-    if targets is None:
+    if not targets:
         targets = [host_target]
 
     paths = []
@@ -222,7 +235,11 @@ def main():
         cmake_build = ['cmake', '--build', build_dir, '--']
         if args.build == 'verbose':
             cmake_build += ['-v']
-        cmake_build += ['-j%d' % multiprocessing.cpu_count()]
+
+        if args.build_jobs is not None:
+            cmake_build += ['-j%d' % args.build_jobs]
+        else:
+            cmake_build += ['-j%d' % multiprocessing.cpu_count()]
 
         print("--- Building test dependencies %s ---" %
               ', '.join(dependency_targets))
@@ -254,6 +271,9 @@ def main():
         test_args += ['--param', 'swift_test_results_dir=%s' % args.result_dir,
                       '--xunit-xml-output=%s' % os.path.join(args.result_dir,
                                                              'lit-tests.xml')]
+
+    if args.filter:
+        test_args += ['--filter', args.filter]
 
     test_cmd = [sys.executable, args.lit] + test_args + paths
 

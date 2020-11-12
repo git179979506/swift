@@ -27,6 +27,7 @@
 #include "swift/AST/TypeRepr.h"
 #include "swift/Basic/SourceManager.h"
 #include "swift/Config.h"
+#include "swift/Localization/LocalizationFormat.h"
 #include "swift/Parse/Lexer.h" // bad dependency
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/Twine.h"
@@ -92,19 +93,13 @@ static_assert(sizeof(storedDiagnosticInfos) / sizeof(StoredDiagnosticInfo) ==
               "array size mismatch");
 
 static constexpr const char * const diagnosticStrings[] = {
-#define ERROR(ID, Options, Text, Signature) Text,
-#define WARNING(ID, Options, Text, Signature) Text,
-#define NOTE(ID, Options, Text, Signature) Text,
-#define REMARK(ID, Options, Text, Signature) Text,
+#define DIAG(KIND, ID, Options, Text, Signature) Text,
 #include "swift/AST/DiagnosticsAll.def"
     "<not a diagnostic>",
 };
 
 static constexpr const char *const debugDiagnosticStrings[] = {
-#define ERROR(ID, Options, Text, Signature) Text " [" #ID "]",
-#define WARNING(ID, Options, Text, Signature) Text " [" #ID "]",
-#define NOTE(ID, Options, Text, Signature) Text " [" #ID "]",
-#define REMARK(ID, Options, Text, Signature) Text " [" #ID "]",
+#define DIAG(KIND, ID, Options, Text, Signature) Text " [" #ID "]",
 #include "swift/AST/DiagnosticsAll.def"
     "<not a diagnostic>",
 };
@@ -527,15 +522,26 @@ static void formatDiagnosticArgument(StringRef Modifier,
 
   case DiagnosticArgumentKind::ValueDecl:
     Out << FormatOpts.OpeningQuotationMark;
-    Arg.getAsValueDecl()->getFullName().printPretty(Out);
+    Arg.getAsValueDecl()->getName().printPretty(Out);
     Out << FormatOpts.ClosingQuotationMark;
     break;
 
+  case DiagnosticArgumentKind::FullyQualifiedType:
   case DiagnosticArgumentKind::Type: {
     assert(Modifier.empty() && "Improper modifier for Type argument");
     
     // Strip extraneous parentheses; they add no value.
-    auto type = Arg.getAsType()->getWithoutParens();
+    Type type;
+    bool needsQualification = false;
+
+    if (Arg.getKind() == DiagnosticArgumentKind::Type) {
+      type = Arg.getAsType()->getWithoutParens();
+      needsQualification = typeSpellingIsAmbiguous(type, Args);
+    } else {
+      assert(Arg.getKind() == DiagnosticArgumentKind::FullyQualifiedType);
+      type = Arg.getAsFullyQualifiedType().getType()->getWithoutParens();
+      needsQualification = true;
+    }
 
     // If a type has an unresolved type, print it with syntax sugar removed for
     // clarity. For example, print `Array<_>` instead of `[_]`.
@@ -543,9 +549,7 @@ static void formatDiagnosticArgument(StringRef Modifier,
       type = type->getWithoutSyntaxSugar();
     }
 
-    bool isAmbiguous = typeSpellingIsAmbiguous(type, Args);
-
-    if (isAmbiguous && isa<OpaqueTypeArchetypeType>(type.getPointer())) {
+    if (needsQualification && isa<OpaqueTypeArchetypeType>(type.getPointer())) {
       auto opaqueTypeDecl = type->castTo<OpaqueTypeArchetypeType>()->getDecl();
 
       llvm::SmallString<256> NamingDeclText;
@@ -556,7 +560,7 @@ static void formatDiagnosticArgument(StringRef Modifier,
         selfTy->print(OutNaming);
         OutNaming << '.';
       }
-      namingDecl->getFullName().printPretty(OutNaming);
+      namingDecl->getName().printPretty(OutNaming);
 
       auto descriptiveKind = opaqueTypeDecl->getDescriptiveKind();
 
@@ -567,7 +571,7 @@ static void formatDiagnosticArgument(StringRef Modifier,
 
     } else {
       auto printOptions = PrintOptions();
-      printOptions.FullyQualifiedTypes = isAmbiguous;
+      printOptions.FullyQualifiedTypes = needsQualification;
       std::string typeName = type->getString(printOptions);
 
       if (shouldShowAKA(type, typeName)) {
@@ -583,11 +587,14 @@ static void formatDiagnosticArgument(StringRef Modifier,
     }
     break;
   }
+
   case DiagnosticArgumentKind::TypeRepr:
     assert(Modifier.empty() && "Improper modifier for TypeRepr argument");
+    assert(Arg.getAsTypeRepr() && "TypeRepr argument is null");
     Out << FormatOpts.OpeningQuotationMark << Arg.getAsTypeRepr()
         << FormatOpts.ClosingQuotationMark;
     break;
+
   case DiagnosticArgumentKind::PatternKind:
     assert(Modifier.empty() && "Improper modifier for PatternKind argument");
     Out << Arg.getAsPatternKind();
@@ -656,6 +663,30 @@ static void formatDiagnosticArgument(StringRef Modifier,
     Out << FormatOpts.OpeningQuotationMark << Arg.getAsLayoutConstraint()
         << FormatOpts.ClosingQuotationMark;
     break;
+  case DiagnosticArgumentKind::ActorIsolation:
+    switch (auto isolation = Arg.getAsActorIsolation()) {
+    case ActorIsolation::ActorInstance:
+      Out << "actor-isolated";
+      break;
+
+    case ActorIsolation::GlobalActor:
+      Out << "global actor " << FormatOpts.OpeningQuotationMark
+        << isolation.getGlobalActor().getString()
+        << FormatOpts.ClosingQuotationMark << "-isolated";
+      break;
+
+    case ActorIsolation::Independent:
+      Out << "actor-independent";
+      break;
+
+    case ActorIsolation::IndependentUnsafe:
+      Out << "actor-independent-unsafe";
+      break;
+
+    case ActorIsolation::Unspecified:
+      Out << "non-actor-isolated";
+      break;
+    }
   }
 }
 
@@ -842,6 +873,20 @@ void DiagnosticEngine::emitTentativeDiagnostics() {
   TentativeDiagnostics.clear();
 }
 
+/// Returns the access level of the least accessible PrettyPrintedDeclarations
+/// buffer that \p decl should appear in.
+///
+/// This is always \c Public unless \p decl is a \c ValueDecl and its
+/// access level is below \c Public. (That can happen with @testable and
+/// @_private imports.)
+static AccessLevel getBufferAccessLevel(const Decl *decl) {
+  AccessLevel level = AccessLevel::Public;
+  if (auto *VD = dyn_cast<ValueDecl>(decl))
+    level = VD->getFormalAccessScope().accessLevelForDiagnostics();
+  if (level > AccessLevel::Public) level = AccessLevel::Public;
+  return level;
+}
+
 Optional<DiagnosticInfo>
 DiagnosticEngine::diagnosticInfoForDiagnostic(const Diagnostic &diagnostic) {
   auto behavior = state.determineBehavior(diagnostic.getID());
@@ -863,21 +908,31 @@ DiagnosticEngine::diagnosticInfoForDiagnostic(const Diagnostic &diagnostic) {
       if (ppLoc.isInvalid()) {
         class TrackingPrinter : public StreamPrinter {
           SmallVectorImpl<std::pair<const Decl *, uint64_t>> &Entries;
+          AccessLevel bufferAccessLevel;
 
         public:
           TrackingPrinter(
               SmallVectorImpl<std::pair<const Decl *, uint64_t>> &Entries,
-              raw_ostream &OS) :
-            StreamPrinter(OS), Entries(Entries) {}
+              raw_ostream &OS, AccessLevel bufferAccessLevel) :
+            StreamPrinter(OS), Entries(Entries),
+            bufferAccessLevel(bufferAccessLevel) {}
 
           void printDeclLoc(const Decl *D) override {
-            Entries.push_back({ D, OS.tell() });
+            if (getBufferAccessLevel(D) == bufferAccessLevel)
+              Entries.push_back({ D, OS.tell() });
           }
         };
         SmallVector<std::pair<const Decl *, uint64_t>, 8> entries;
         llvm::SmallString<128> buffer;
         llvm::SmallString<128> bufferName;
         {
+          // The access level of the buffer we want to print. Declarations below
+          // this access level will be omitted from the buffer; declarations
+          // above it will be printed, but (except for Open declarations in the
+          // Public buffer) will not be recorded in PrettyPrintedDeclarations as
+          // the "true" SourceLoc for the declaration.
+          AccessLevel bufferAccessLevel = getBufferAccessLevel(decl);
+
           // Figure out which declaration to print. It's the top-most
           // declaration (not a module).
           const Decl *ppDecl = decl;
@@ -938,10 +993,21 @@ DiagnosticEngine::diagnosticInfoForDiagnostic(const Diagnostic &diagnostic) {
             bufferName += ext->getExtendedType().getString();
           }
 
+          // If we're using a lowered access level, give the buffer a distinct
+          // name.
+          if (bufferAccessLevel != AccessLevel::Public) {
+            assert(bufferAccessLevel < AccessLevel::Public
+                   && "Above-public access levels should use public buffer");
+            bufferName += " (";
+            bufferName += getAccessLevelSpelling(bufferAccessLevel);
+            bufferName += ")";
+          }
+
           // Pretty-print the declaration we've picked.
           llvm::raw_svector_ostream out(buffer);
-          TrackingPrinter printer(entries, out);
-          ppDecl->print(printer, PrintOptions::printForDiagnostics());
+          TrackingPrinter printer(entries, out, bufferAccessLevel);
+          ppDecl->print(printer,
+                        PrintOptions::printForDiagnostics(bufferAccessLevel));
         }
 
         // Build a buffer with the pretty-printed declaration.
@@ -984,16 +1050,15 @@ void DiagnosticEngine::emitDiagnostic(const Diagnostic &diagnostic) {
     info->ChildDiagnosticInfo = childInfoPtrs;
     
     SmallVector<std::string, 1> educationalNotePaths;
-    if (useDescriptiveDiagnostics) {
-      auto associatedNotes = educationalNotes[(uint32_t)diagnostic.getID()];
-      while (associatedNotes && *associatedNotes) {
-        SmallString<128> notePath(getDiagnosticDocumentationPath());
-        llvm::sys::path::append(notePath, *associatedNotes);
-        educationalNotePaths.push_back(notePath.str());
-        associatedNotes++;
-      }
-      info->EducationalNotePaths = educationalNotePaths;
+
+    auto associatedNotes = educationalNotes[(uint32_t)diagnostic.getID()];
+    while (associatedNotes && *associatedNotes) {
+      SmallString<128> notePath(getDiagnosticDocumentationPath());
+      llvm::sys::path::append(notePath, *associatedNotes);
+      educationalNotePaths.push_back(notePath.str().str());
+      ++associatedNotes;
     }
+    info->EducationalNotePaths = educationalNotePaths;
 
     for (auto &consumer : Consumers) {
       consumer->handleDiagnostic(SourceMgr, *info);
@@ -1007,12 +1072,20 @@ void DiagnosticEngine::emitDiagnostic(const Diagnostic &diagnostic) {
     emitDiagnostic(childNote);
 }
 
-const char *DiagnosticEngine::diagnosticStringFor(const DiagID id,
-                                                  bool printDiagnosticName) {
+llvm::StringRef
+DiagnosticEngine::diagnosticStringFor(const DiagID id,
+                                      bool printDiagnosticName) {
+  // TODO: Print diagnostic names from `localization`.
   if (printDiagnosticName) {
     return debugDiagnosticStrings[(unsigned)id];
   }
-  return diagnosticStrings[(unsigned)id];
+  auto defaultMessage = diagnosticStrings[(unsigned)id];
+  if (localization) {
+    auto localizedMessage =
+        localization.get()->getMessageOr(id, defaultMessage);
+    return localizedMessage;
+  }
+  return defaultMessage;
 }
 
 const char *InFlightDiagnostic::fixItStringFor(const FixItID id) {

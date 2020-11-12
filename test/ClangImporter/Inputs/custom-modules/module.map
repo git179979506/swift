@@ -59,6 +59,11 @@ module HasSubmodule {
   }
 }
 
+module ImageInitializers {
+  header "ImageInitializers.h"
+  export *
+}
+
 module ImportsMissingHeader {
   header "ImportsMissingHeader.h"
   export *
@@ -165,6 +170,7 @@ module SubclassExistentialsExtra {
 
 module SwiftPrivateAttr {
   header "SwiftPrivateAttr.h"
+  export *
 }
 
 module TestProtocols { header "Protocols.h" }
@@ -213,6 +219,10 @@ module ObjCBridgeNonconforming {
 
 module BlocksReturningBool {
   header "BlocksReturningBool.h"
+}
+
+module MacOSVersionCanonicalization {
+  header "MacOSVersionCanonicalization.h"
 }
 
 module Warnings1 { header "Warnings1.h" }

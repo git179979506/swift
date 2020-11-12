@@ -19,10 +19,10 @@
 #ifndef SWIFT_SEMA_IDETYPECHECKING_H
 #define SWIFT_SEMA_IDETYPECHECKING_H
 
-#include "llvm/ADT/MapVector.h"
 #include "swift/AST/Identifier.h"
 #include "swift/Basic/SourceLoc.h"
 #include <memory>
+#include <tuple>
 
 namespace swift {
   class AbstractFunctionDecl;
@@ -35,6 +35,7 @@ namespace swift {
   class Expr;
   class ExtensionDecl;
   class FunctionType;
+  class LookupResult;
   class NominalTypeDecl;
   class PatternBindingDecl;
   class ProtocolDecl;
@@ -42,7 +43,6 @@ namespace swift {
   class SubscriptDecl;
   class TopLevelCodeDecl;
   class Type;
-  class TypeChecker;
   class ValueDecl;
   struct PrintOptions;
 
@@ -81,6 +81,11 @@ namespace swift {
     ArrayRef<ValueDecl*> getMemberDecls(InterestedMemberKind Kind);
   };
 
+  /// Look up a member with the given name in the given type.
+  ///
+  /// Unlike other member lookup functions, \c swift::resolveValueMember()
+  /// should be used when you want to look up declarations with the same name as
+  /// one you already have.
   ResolvedMemberResult resolveValueMember(DeclContext &DC, Type BaseTy,
                                          DeclName Name);
 
@@ -128,14 +133,16 @@ namespace swift {
   /// Typecheck the given expression.
   bool typeCheckExpression(DeclContext *DC, Expr *&parsedExpr);
 
-  /// Partially typecheck the specified function body.
-  bool typeCheckAbstractFunctionBodyUntil(AbstractFunctionDecl *AFD,
-                                          SourceLoc EndTypeCheckLoc);
+  /// Type check a function body element which is at \p TagetLoc .
+  bool typeCheckASTNodeAtLoc(DeclContext *DC, SourceLoc TargetLoc);
 
   /// Typecheck top-level code parsed during code completion.
   ///
   /// \returns true on success, false on error.
   bool typeCheckTopLevelCodeDecl(TopLevelCodeDecl *TLCD);
+
+  LookupResult
+  lookupSemanticMember(DeclContext *DC, Type ty, DeclName name);
 
   struct ExtensionInfo {
     // The extension with the declarations to apply.
@@ -223,10 +230,6 @@ namespace swift {
   /// written by the user; this performs the reverse transformation.
   OriginalArgumentList getOriginalArgumentList(Expr *expr);
 
-  /// Return true if the specified type or a super-class/super-protocol has the
-  /// @dynamicMemberLookup attribute on it.
-  bool hasDynamicMemberLookupAttribute(Type type);
-
   /// Returns the root type and result type of the keypath type in a keypath
   /// dynamic member lookup subscript, or \c None if it cannot be determined.
   ///
@@ -252,6 +255,34 @@ namespace swift {
                             bool IncludeProtocolRequirements = true,
                             bool Transitive = false);
 
+  /// Enumerates the various kinds of "build" functions within a result
+  /// builder.
+  enum class ResultBuilderBuildFunction {
+    BuildBlock,
+    BuildExpression,
+    BuildOptional,
+    BuildEitherFirst,
+    BuildEitherSecond,
+    BuildArray,
+    BuildLimitedAvailability,
+    BuildFinalResult,
+  };
+
+  /// Try to infer the component type of a result builder from the type
+  /// of buildBlock or buildExpression, if it was there.
+  Type inferResultBuilderComponentType(NominalTypeDecl *builder);
+
+  /// Print the declaration for a result builder "build" function, for use
+  /// in Fix-Its, code completion, and so on.
+  void printResultBuilderBuildFunction(
+      NominalTypeDecl *builder, Type componentType,
+      ResultBuilderBuildFunction function,
+      Optional<std::string> stubIndent, llvm::raw_ostream &out);
+
+  /// Compute the insertion location, indentation string, and component type
+  /// for a Fix-It that adds a new build* function to a result builder.
+  std::tuple<SourceLoc, std::string, Type>
+  determineResultBuilderBuildFixItInfo(NominalTypeDecl *builder);
 }
 
 #endif

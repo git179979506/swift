@@ -19,6 +19,7 @@
 
 #include "llvm/Support/Compiler.h"
 #include "llvm/ADT/DenseMapInfo.h"
+#include "llvm/Support/PointerLikeTypeTraits.h"
 #include "swift/Basic/InlineBitfield.h"
 #include "swift/Basic/LLVM.h"
 #include <type_traits>
@@ -304,6 +305,18 @@ protected:
     FieldNo : 32
   );
 
+  SWIFT_INLINE_BITFIELD(RefElementAddrInst, SingleValueInstruction, 1,
+    Immutable : 1
+  );
+
+  SWIFT_INLINE_BITFIELD(RefTailAddrInst, SingleValueInstruction, 1,
+    Immutable : 1
+  );
+
+  SWIFT_INLINE_BITFIELD(EndCOWMutationInst, NonValueInstruction, 1,
+    KeepUnique : 1
+  );
+
   SWIFT_INLINE_BITFIELD_FULL(FieldIndexCacheBase, SingleValueInstruction, 32,
                              : NumPadBits,
                              FieldIndex : 32);
@@ -349,10 +362,29 @@ protected:
   IBWTO_BITFIELD(SwitchValueInst, TermInst, 1,
     HasDefault : 1
   );
-  SWIFT_INLINE_BITFIELD_FULL(SwitchEnumInstBase, TermInst, 1+32,
+
+  // Special handling for SwitchEnumInstBase.
+  //
+  // We assume all subsequent SwitchEnumBit uses do not use any further bits.
+  SWIFT_INLINE_BITFIELD(SEIBase, TermInst, 32-NumTermInstBits,
+    // Does this switch enum inst have a default block.
     HasDefault : 1,
-    : NumPadBits,
-    NumCases : 32
+    // Number of cases 
+    NumCases : 31 - NumTermInstBits;
+    template <typename BaseTy>
+    friend class SwitchEnumInstBase;
+  );
+
+#define SEIB_BITFIELD_EMPTY(T, U) \
+  IBWTO_BITFIELD_EMPTY(T, U)
+
+  SEIB_BITFIELD_EMPTY(SwitchEnumInst, SEIBase);
+  SEIB_BITFIELD_EMPTY(SwitchEnumAddrInst, SEIBase);
+
+  SWIFT_INLINE_BITFIELD_EMPTY(MultipleValueInstruction, SILInstruction);
+
+  SWIFT_INLINE_BITFIELD(BeginCOWMutationInst, MultipleValueInstruction, 1,
+    Native : 1
   );
 
   } Bits;
@@ -433,7 +465,7 @@ public:
   /// If this is a SILArgument or a SILInstruction get its parent module,
   /// otherwise return null.
   SILModule *getModule() const;
-
+  
   /// Pretty-print the node.  If the node is an instruction, the output
   /// will be valid SIL assembly; otherwise, it will be an arbitrary
   /// format suitable for debugging.

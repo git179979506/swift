@@ -131,7 +131,7 @@ static bool hasOpaqueArchetypeOperand(TypeExpansionContext context,
 static bool hasOpaqueArchetypeResult(TypeExpansionContext context,
                                      SILInstruction &inst) {
   // Check the results for opaque types.
-  for (const auto &res : inst.getResults())
+  for (SILValue res : inst.getResults())
     if (opaqueArchetypeWouldChange(context, res->getType().getASTType()))
       return true;
   return false;
@@ -161,6 +161,7 @@ static bool hasOpaqueArchetype(TypeExpansionContext context,
   case SILInstructionKind::PreviousDynamicFunctionRefInst:
   case SILInstructionKind::GlobalAddrInst:
   case SILInstructionKind::GlobalValueInst:
+  case SILInstructionKind::BaseAddrForOffsetInst:
   case SILInstructionKind::IntegerLiteralInst:
   case SILInstructionKind::FloatLiteralInst:
   case SILInstructionKind::StringLiteralInst:
@@ -176,6 +177,7 @@ static bool hasOpaqueArchetype(TypeExpansionContext context,
   case SILInstructionKind::UncheckedAddrCastInst:
   case SILInstructionKind::UncheckedTrivialBitCastInst:
   case SILInstructionKind::UncheckedBitwiseCastInst:
+  case SILInstructionKind::UncheckedValueCastInst:
   case SILInstructionKind::RefToRawPointerInst:
   case SILInstructionKind::RawPointerToRefInst:
 #define LOADABLE_REF_STORAGE(Name, ...)                                        \
@@ -327,6 +329,17 @@ static bool hasOpaqueArchetype(TypeExpansionContext context,
   case SILInstructionKind::CondFailInst:
   case SILInstructionKind::DestructureStructInst:
   case SILInstructionKind::DestructureTupleInst:
+  case SILInstructionKind::DifferentiableFunctionInst:
+  case SILInstructionKind::DifferentiableFunctionExtractInst:
+  case SILInstructionKind::LinearFunctionInst:
+  case SILInstructionKind::LinearFunctionExtractInst:
+  case SILInstructionKind::DifferentiabilityWitnessFunctionInst:
+  case SILInstructionKind::BeginCOWMutationInst:
+  case SILInstructionKind::EndCOWMutationInst:
+  case SILInstructionKind::GetAsyncContinuationInst:
+  case SILInstructionKind::GetAsyncContinuationAddrInst:
+  case SILInstructionKind::AwaitAsyncContinuationInst:
+  case SILInstructionKind::HopToExecutorInst:
     // Handle by operand and result check.
     break;
 
@@ -391,6 +404,9 @@ void updateOpaqueArchetypes(SILFunction &F) {
 /// A utility pass to serialize a SILModule at any place inside the optimization
 /// pipeline.
 class SerializeSILPass : public SILModuleTransform {
+    
+  bool onlyForCrossModuleOptimization;
+    
   /// Removes [serialized] from all functions. This allows for more
   /// optimizations and for a better dead function elimination.
   void removeSerializedFlagFromAllFunctions(SILModule &M) {
@@ -417,16 +433,23 @@ class SerializeSILPass : public SILModuleTransform {
     }
 
     for (auto &VT : M.getVTables()) {
-      VT.setSerialized(IsNotSerialized);
+      VT->setSerialized(IsNotSerialized);
     }
   }
 
 public:
-  SerializeSILPass() {}
+  SerializeSILPass(bool onlyForCrossModuleOptimization)
+    : onlyForCrossModuleOptimization(onlyForCrossModuleOptimization)
+  { }
+  
   void run() override {
     auto &M = *getModule();
     // Nothing to do if the module was serialized already.
     if (M.isSerialized())
+      return;
+    
+    if (onlyForCrossModuleOptimization &&
+        !M.getOptions().CrossModuleOptimization)
       return;
 
     // Mark all reachable functions as "anchors" so that they are not
@@ -449,5 +472,9 @@ public:
 };
 
 SILTransform *swift::createSerializeSILPass() {
-  return new SerializeSILPass();
+  return new SerializeSILPass(/* onlyForCrossModuleOptimization */ false);
+}
+
+SILTransform *swift::createCMOSerializeSILPass() {
+  return new SerializeSILPass(/* onlyForCrossModuleOptimization */ true);
 }

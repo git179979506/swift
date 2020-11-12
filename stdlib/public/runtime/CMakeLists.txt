@@ -22,11 +22,8 @@ set(swift_runtime_objc_sources
     ErrorObject.mm
     SwiftObject.mm
     SwiftValue.mm
-    ReflectionMirror.mm
-    ObjCRuntimeGetImageNameFromClass.mm
-    "${SWIFT_SOURCE_DIR}/lib/Demangling/OldRemangler.cpp"
-    "${SWIFT_SOURCE_DIR}/lib/Demangling/Remangler.cpp"
-    )
+    ReflectionMirrorObjC.mm
+    ObjCRuntimeGetImageNameFromClass.mm)
 
 set(swift_runtime_sources
     AnyHashableSupport.cpp
@@ -36,7 +33,9 @@ set(swift_runtime_sources
     CompatibilityOverride.cpp
     CygwinPort.cpp
     Demangle.cpp
+    DynamicCast.cpp
     Enum.cpp
+    EnvironmentVariables.cpp
     ErrorObjectCommon.cpp
     ErrorObjectConstants.cpp
     ErrorObjectNative.cpp
@@ -44,14 +43,17 @@ set(swift_runtime_sources
     ErrorDefaultImpls.cpp
     Exclusivity.cpp
     ExistentialContainer.cpp
+    Float16Support.cpp
+    FoundationSupport.cpp
     Heap.cpp
     HeapObject.cpp
+    ImageInspectionCommon.cpp
     ImageInspectionMachO.cpp
     ImageInspectionELF.cpp
     ImageInspectionCOFF.cpp
+    ImageInspectionStatic.cpp
     KeyPaths.cpp
     KnownMetadata.cpp
-    LLVMSupport.cpp
     Metadata.cpp
     MetadataLookup.cpp
     MutexPThread.cpp
@@ -61,20 +63,9 @@ set(swift_runtime_sources
     Portability.cpp
     ProtocolConformance.cpp
     RefCount.cpp
+    ReflectionMirror.cpp
     RuntimeInvocationsTracking.cpp
-    SwiftDtoa.cpp
-    "${SWIFT_SOURCE_DIR}/lib/Demangling/OldDemangler.cpp"
-    "${SWIFT_SOURCE_DIR}/lib/Demangling/Demangler.cpp"
-    "${SWIFT_SOURCE_DIR}/lib/Demangling/NodePrinter.cpp"
-    "${SWIFT_SOURCE_DIR}/lib/Demangling/Context.cpp"
-    "${SWIFT_SOURCE_DIR}/lib/Demangling/ManglingUtils.cpp"
-    "${SWIFT_SOURCE_DIR}/lib/Demangling/Punycode.cpp")
-
-# When we're building with assertions, include the demangle node dumper to aid
-# in debugging.
-if (LLVM_ENABLE_ASSERTIONS)
-  list(APPEND swift_runtime_sources "${SWIFT_SOURCE_DIR}/lib/Demangling/NodeDumper.cpp")
-endif(LLVM_ENABLE_ASSERTIONS)
+    SwiftDtoa.cpp)
 
 # Acknowledge that the following sources are known.
 set(LLVM_OPTIONAL_SOURCES
@@ -86,51 +77,12 @@ set(LLVM_OPTIONAL_SOURCES
 
 set(swift_runtime_library_compile_flags ${swift_runtime_compile_flags})
 list(APPEND swift_runtime_library_compile_flags -DswiftCore_EXPORTS)
-list(APPEND swift_runtime_library_compile_flags -I${SWIFT_SOURCE_DIR}/include)
+list(APPEND swift_runtime_library_compile_flags -I${SWIFT_SOURCE_DIR}/stdlib/include/llvm/Support -I${SWIFT_SOURCE_DIR}/include)
 
 set(sdk "${SWIFT_HOST_VARIANT_SDK}")
 if(SWIFT_BUILD_STATIC_STDLIB AND "${sdk}" STREQUAL "LINUX")
-  list(REMOVE_ITEM swift_runtime_sources ImageInspectionELF.cpp)
   set(static_binary_lnk_file_list)
   string(TOLOWER "${sdk}" lowercase_sdk)
-
-  # These two libraries are only used with the static swiftcore
-  add_swift_target_library(swiftImageInspectionShared STATIC
-    ImageInspectionELF.cpp
-    C_COMPILE_FLAGS ${swift_runtime_library_compile_flags}
-    LINK_FLAGS ${swift_runtime_linker_flags}
-    SWIFT_COMPILE_FLAGS ${SWIFT_STANDARD_LIBRARY_SWIFT_FLAGS}
-    INSTALL_IN_COMPONENT stdlib)
-
-  foreach(arch IN LISTS SWIFT_SDK_${sdk}_ARCHITECTURES)
-    set(FragileSupportLibrary swiftImageInspectionShared-${SWIFT_SDK_${sdk}_LIB_SUBDIR}-${arch})
-    set(LibraryLocation ${SWIFTSTATICLIB_DIR}/${lowercase_sdk}/${arch})
-    add_custom_command_target(swift_image_inspection_${arch}_static
-      COMMAND
-        "${CMAKE_COMMAND}" -E copy $<TARGET_FILE:${FragileSupportLibrary}> ${LibraryLocation}
-      OUTPUT
-        "${LibraryLocation}/${CMAKE_STATIC_LIBRARY_PREFIX}swiftImageInspectionShared${CMAKE_STATIC_LIBRARY_SUFFIX}"
-      DEPENDS
-         ${FragileSupportLibrary})
-    add_dependencies(stdlib ${FragileSupportLibrary})
-    swift_install_in_component(FILES $<TARGET_FILE:${FragileSupportLibrary}>
-                               DESTINATION "lib/swift_static/${lowercase_sdk}/${arch}"
-                               COMPONENT stdlib)
-  endforeach()
-
-  set(FragileSupportLibraryPrimary swiftImageInspectionShared-${SWIFT_SDK_${sdk}_LIB_SUBDIR}-${SWIFT_PRIMARY_VARIANT_ARCH})
-  set(LibraryLocationPrimary ${SWIFTSTATICLIB_DIR}/${lowercase_sdk})
-  add_custom_command_target(swift_image_inspection_static_primary_arch
-      COMMAND
-         "${CMAKE_COMMAND}" -E copy $<TARGET_FILE:${FragileSupportLibraryPrimary}> ${LibraryLocationPrimary}
-      OUTPUT
-      "${LibraryLocationPrimary}/${CMAKE_STATIC_LIBRARY_PREFIX}swiftImageInspectionShared${CMAKE_STATIC_LIBRARY_SUFFIX}"
-      DEPENDS
-         ${FragileSupportLibraryPrimary})
-    add_dependencies(stdlib ${FragileSupportLibraryPrimary})
-    swift_install_in_component(FILES $<TARGET_FILE:${FragileSupportLibraryPrimary}>
-                               DESTINATION "lib/swift_static/${lowercase_sdk}"
-                               COMPONENT stdlib)
 
   # Generate the static-executable-args.lnk file used for ELF systems (eg linux)
   set(linkfile "${lowercase_sdk}/static-executable-args.lnk")
@@ -149,25 +101,14 @@ if(SWIFT_BUILD_STATIC_STDLIB AND "${sdk}" STREQUAL "LINUX")
                              DESTINATION "lib/swift_static/${lowercase_sdk}"
                              COMPONENT stdlib)
   add_custom_target(static_binary_magic ALL DEPENDS ${static_binary_lnk_file_list})
-  foreach(arch IN LISTS SWIFT_SDK_LINUX_ARCHITECTURES)
-    add_dependencies(static_binary_magic ${swift_image_inspection_${arch}_static})
-  endforeach()
-  add_dependencies(static_binary_magic ${swift_image_inspection_static_primary_arch})
-  add_dependencies(stdlib static_binary_magic)
-
-  add_swift_target_library(swiftImageInspectionSharedObject OBJECT_LIBRARY
-    ImageInspectionELF.cpp
-    C_COMPILE_FLAGS ${swift_runtime_library_compile_flags}
-    LINK_FLAGS ${swift_runtime_linker_flags}
-    SWIFT_COMPILE_FLAGS ${SWIFT_STANDARD_LIBRARY_SWIFT_FLAGS}
-    INSTALL_IN_COMPONENT never_install)
 endif()
 
 add_swift_target_library(swiftRuntime OBJECT_LIBRARY
   ${swift_runtime_sources}
   ${swift_runtime_objc_sources}
   ${swift_runtime_leaks_sources}
-  C_COMPILE_FLAGS ${swift_runtime_library_compile_flags}
+  C_COMPILE_FLAGS
+    ${swift_runtime_library_compile_flags}
   LINK_FLAGS ${swift_runtime_linker_flags}
   SWIFT_COMPILE_FLAGS ${SWIFT_STANDARD_LIBRARY_SWIFT_FLAGS}
   INSTALL_IN_COMPONENT never_install)
@@ -181,6 +122,7 @@ foreach(sdk ${SWIFT_CONFIGURED_SDKS})
     list(APPEND COFF_SDKS ${sdk})
   endif()
 endforeach()
+
 
 add_swift_target_library(swiftImageRegistrationObjectELF
                   OBJECT_LIBRARY IS_STDLIB IS_STDLIB_CORE
@@ -256,6 +198,49 @@ foreach(sdk ${SWIFT_CONFIGURED_SDKS})
                           ${swiftImageRegistration-${arch_suffix}})
       add_dependencies(stdlib swift-stdlib-${arch_suffix} swiftImageRegistration-${arch_suffix})
     endif()
+
+    # Generate the static-stdlib-args.lnk file used by -static-stdlib option for
+    # 'GenericUnix' (eg linux)
+    if(${SWIFT_SDK_${sdk}_OBJECT_FORMAT} STREQUAL ELF)
+      string(TOLOWER "${sdk}" lowercase_sdk)
+      if(SWIFT_${SWIFT_HOST_VARIANT_SDK}_${SWIFT_HOST_VARIANT_ARCH}_ICU_STATICLIB)
+        set(libicu_i18n_a -licui18nswift)
+        set(libicu_uc_a -licuucswift)
+        set(libicu_data_a -licudataswift)
+      else()
+        find_package(ICU REQUIRED COMPONENTS uc i18n)
+        get_filename_component(ICU_UC_LIBDIR "${ICU_UC_LIBRARIES}" DIRECTORY)
+        get_filename_component(ICU_I18N_LIBDIR "${ICU_I18N_LIBRARIES}" DIRECTORY)
+
+        set(libicu_i18n_a -licui18n)
+        set(libicu_uc_a -licuuc)
+        set(libicu_data_a)
+        if(EXISTS ${ICU_I18N_LIBDIR}/libicui18n.a AND
+            EXISTS ${ICU_UC_LIBDIR}/libicuuc.a AND
+            EXISTS ${ICU_UC_LIBDIR}/libicudata.a)
+          set(libicu_i18n_a ${ICU_I18N_LIBDIR}/libicui18n.a)
+          set(libicu_uc_a ${ICU_UC_LIBDIR}/libicuuc.a)
+          set(libicu_data_a ${ICU_UC_LIBDIR}/libicudata.a)
+        endif()
+      endif()
+
+      set(linkfile ${lowercase_sdk}/static-stdlib-args.lnk)
+      file(WRITE "${SWIFTSTATICLIB_DIR}/${linkfile}" "
+-ldl
+-lpthread
+-lswiftCore
+${libicu_i18n_a}
+${libicu_uc_a}
+${libicu_data_a}
+-lstdc++
+-lm
+-Xlinker -export-dynamic
+-Xlinker --exclude-libs
+-Xlinker ALL")
+
+      swift_install_in_component(FILES "${SWIFTSTATICLIB_DIR}/${linkfile}"
+                                 DESTINATION "lib/swift_static/${lowercase_sdk}"
+                                 COMPONENT stdlib)
+    endif()
   endforeach()
 endforeach()
-

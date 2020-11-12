@@ -390,10 +390,10 @@ class FailableBaseClass {
   // CHECK:   br [[FAIL_EPILOG_BB:bb[0-9]+]]
   //
   // CHECK: [[SUCC_BB]]:
-  // CHECK:   [[UNWRAPPED_NEW_SELF:%.*]] = unchecked_enum_data [[NEW_SELF]] : $Optional<FailableBaseClass>, #Optional.some!enumelt.1
+  // CHECK:   [[UNWRAPPED_NEW_SELF:%.*]] = unchecked_enum_data [[NEW_SELF]] : $Optional<FailableBaseClass>, #Optional.some!enumelt
   // CHECK:   assign [[UNWRAPPED_NEW_SELF]] to [[PB_BOX]]
   // CHECK:   [[RESULT:%.*]] = load [copy] [[PB_BOX]]
-  // CHECK:   [[WRAPPED_RESULT:%.*]] = enum $Optional<FailableBaseClass>, #Optional.some!enumelt.1, [[RESULT]]
+  // CHECK:   [[WRAPPED_RESULT:%.*]] = enum $Optional<FailableBaseClass>, #Optional.some!enumelt, [[RESULT]]
   // CHECK:   destroy_value [[MARKED_SELF_BOX]]
   // CHECK:   br [[EPILOG_BB:bb[0-9]+]]([[WRAPPED_RESULT]]
   //
@@ -416,7 +416,7 @@ class FailableBaseClass {
   // CHECK:   [[MARKED_SELF_BOX:%.*]] = mark_uninitialized [delegatingself] [[SELF_BOX]]
   // CHECK:   [[PB_BOX:%.*]] = project_box [[MARKED_SELF_BOX]]
   // CHECK:   [[NEW_SELF:%.*]] = apply {{.*}}([[SELF_META]])
-  // CHECK:   switch_enum [[NEW_SELF]] : $Optional<FailableBaseClass>, case #Optional.some!enumelt.1: [[SUCC_BB:bb[0-9]+]], case #Optional.none!enumelt: [[FAIL_BB:bb[0-9]+]]
+  // CHECK:   switch_enum [[NEW_SELF]] : $Optional<FailableBaseClass>, case #Optional.some!enumelt: [[SUCC_BB:bb[0-9]+]], case #Optional.none!enumelt: [[FAIL_BB:bb[0-9]+]]
   //
   // CHECK: [[FAIL_BB]]:
   // CHECK:   unreachable
@@ -424,7 +424,7 @@ class FailableBaseClass {
   // CHECK: [[SUCC_BB]]([[RESULT:%.*]] : @owned $FailableBaseClass):
   // CHECK:   assign [[RESULT]] to [[PB_BOX]]
   // CHECK:   [[RESULT:%.*]] = load [copy] [[PB_BOX]]
-  // CHECK:   [[WRAPPED_RESULT:%.*]] = enum $Optional<FailableBaseClass>, #Optional.some!enumelt.1, [[RESULT]] : $FailableBaseClass
+  // CHECK:   [[WRAPPED_RESULT:%.*]] = enum $Optional<FailableBaseClass>, #Optional.some!enumelt, [[RESULT]] : $FailableBaseClass
   // CHECK:   destroy_value [[MARKED_SELF_BOX]]
   // CHECK:   br [[EPILOG_BB:bb[0-9]+]]([[WRAPPED_RESULT]]
   //
@@ -505,7 +505,7 @@ class FailableDerivedClass : FailableBaseClass {
     // CHECK:   [[DOWNCAST_NEW_SELF:%.*]] = unchecked_ref_cast [[NEW_SELF]]
     // CHECK:   store [[DOWNCAST_NEW_SELF]] to [init] [[PB_BOX]]
     // CHECK:   [[RESULT:%.*]] = load [copy] [[PB_BOX]]
-    // CHECK:   [[WRAPPED_RESULT:%.*]] = enum $Optional<FailableDerivedClass>, #Optional.some!enumelt.1, [[RESULT]]
+    // CHECK:   [[WRAPPED_RESULT:%.*]] = enum $Optional<FailableDerivedClass>, #Optional.some!enumelt, [[RESULT]]
     // CHECK:   destroy_value [[MARKED_SELF_BOX]]
     // CHECK:   br [[EPILOG_BB:bb[0-9]+]]([[WRAPPED_RESULT]]
     //
@@ -580,13 +580,11 @@ class ThrowDerivedClass : ThrowBaseClass {
   // CHECK:   store {{%.*}} to [init] [[PROJ]]
   //
   // Then initialize the canary with nil. We are able to borrow the initialized self to avoid retain/release overhead.
-  // CHECK:   [[CANARY_FUNC:%.*]] = function_ref @$s21failable_initializers17ThrowDerivedClassC6canaryAA6CanaryCSgvpfi :
-  // CHECK:   [[OPT_CANARY:%.*]] = apply [[CANARY_FUNC]]()
   // CHECK:   [[SELF:%.*]] = load_borrow [[PROJ]]
   // CHECK:   [[CANARY_ADDR:%.*]] = ref_element_addr [[SELF]]
-  // CHECK:   [[CANARY_ACCESS:%.*]] = begin_access [modify] [dynamic] [[CANARY_ADDR]]
-  // CHECK:   assign [[OPT_CANARY]] to [[CANARY_ACCESS]]
-  // CHECK:   end_access [[CANARY_ACCESS]]
+  // CHECK:   [[CANARY_FUNC:%.*]] = function_ref @$s21failable_initializers17ThrowDerivedClassC6canaryAA6CanaryCSgvpfi :
+  // CHECK:   [[OPT_CANARY:%.*]] = apply [[CANARY_FUNC]]()
+  // CHECK:   store [[OPT_CANARY]] to [init] [[CANARY_ADDR]]
   // CHECK:   end_borrow [[SELF]]
   //
   // Now we perform the unwrap.
@@ -624,13 +622,11 @@ class ThrowDerivedClass : ThrowBaseClass {
   // CHECK:   store {{%.*}} to [init] [[PROJ]]
   //
   // Then initialize the canary with nil. We are able to borrow the initialized self to avoid retain/release overhead.
-  // CHECK:   [[CANARY_FUNC:%.*]] = function_ref @$s21failable_initializers17ThrowDerivedClassC6canaryAA6CanaryCSgvpfi :
-  // CHECK:   [[OPT_CANARY:%.*]] = apply [[CANARY_FUNC]]()
   // CHECK:   [[SELF:%.*]] = load_borrow [[PROJ]]
   // CHECK:   [[CANARY_ADDR:%.*]] = ref_element_addr [[SELF]]
-  // CHECK:   [[CANARY_ACCESS:%.*]] = begin_access [modify] [dynamic] [[CANARY_ADDR]]
-  // CHECK:   assign [[OPT_CANARY]] to [[CANARY_ACCESS]]
-  // CHECK:   end_access [[CANARY_ACCESS]]
+  // CHECK:   [[CANARY_FUNC:%.*]] = function_ref @$s21failable_initializers17ThrowDerivedClassC6canaryAA6CanaryCSgvpfi :
+  // CHECK:   [[OPT_CANARY:%.*]] = apply [[CANARY_FUNC]]()
+  // CHECK:   store [[OPT_CANARY]] to [init] [[CANARY_ADDR]]
   // CHECK:   end_borrow [[SELF]]
   //
   // Now we begin argument emission where we perform the unwrap.

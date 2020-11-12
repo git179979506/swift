@@ -179,57 +179,197 @@ class AbstractionPattern {
     /// type.  ObjCMethod is valid.  OtherData is an encoded foreign
     /// error index.
     ObjCMethodType,
-    /// The uncurried imported type of a C++ method. OrigType is valid and is a
-    /// function type. CXXMethod is valid.
+    /// The uncurried imported type of a C++ non-operator non-static member
+    /// function. OrigType is valid and is a function type. CXXMethod is valid.
     CXXMethodType,
-    /// The curried imported type of a C++ method. OrigType is valid and is a
-    /// function type. CXXMethod is valid.
+    /// The curried imported type of a C++ non-operator non-static member
+    /// function. OrigType is valid and is a function type. CXXMethod is valid.
     CurriedCXXMethodType,
-    /// The partially-applied curried imported type of a C++ method. OrigType is
-    /// valid and is a function type. CXXMethod is valid.
+    /// The partially-applied curried imported type of a C++ non-operator
+    /// non-static member function. OrigType is valid and is a function type.
+    /// CXXMethod is valid.
     PartialCurriedCXXMethodType,
+    /// The uncurried imported type of a C++ operator non-static member
+    /// function. OrigType is valid and is a function type. CXXMethod is valid.
+    CXXOperatorMethodType,
+    /// The curried imported type of a C++ operator non-static member function.
+    /// OrigType is valid and is a function type. CXXMethod is valid.
+    CurriedCXXOperatorMethodType,
+    /// The partially-applied curried imported type of a C++ operator non-static
+    /// member function. OrigType is valid and is a function type. CXXMethod is
+    /// valid.
+    PartialCurriedCXXOperatorMethodType,
+    /// A Swift function whose parameters and results are opaque. This is
+    /// like `AP::Type<T>((T) -> T)`, except that the number of parameters is
+    /// unspecified.
+    ///
+    /// This is used to construct the abstraction pattern for the
+    /// derivative function of a function with opaque abstraction pattern. See
+    /// `OpaqueDerivativeFunction`.
+    OpaqueFunction,
+    /// A Swift function whose parameters are opaque and whose result is the
+    /// tuple abstraction pattern `(AP::Opaque, AP::OpaqueFunction)`.
+    ///
+    /// Purpose: when we reabstract `@differentiable` function-typed values
+    /// using the`AP::Opaque` pattern, we use `AP::Opaque` to reabstract the
+    /// original function in the bundle and `AP::OpaqueDerivativeFunction` to
+    /// reabstract the derivative functions in the bundle. This preserves the
+    /// `@differentiable` function invariant that the derivative type
+    /// (`SILFunctionType::getAutoDiffDerivativeFunctionType()`) of the original
+    /// function is equal to the type of the derivative function. For example:
+    ///
+    ///   differentiable_function
+    ///     [parameters 0]
+    ///     %0 : $@callee_guaranteed (Float) -> Float
+    ///     with_derivative {
+    ///       %1 : $@callee_guaranteed (Float) -> (
+    ///         Float,
+    ///         @owned @callee_guaranteed (Float) -> Float
+    ///       ),
+    ///       %2 : $@callee_guaranteed (Float) -> (
+    ///         Float,
+    ///         @owned @callee_guaranteed (Float) -> Float
+    ///       )
+    ///     }
+    ///
+    /// The invariant-respecting abstraction of this value to `AP::Opaque` is:
+    ///
+    ///   differentiable_function
+    ///     [parameters 0]
+    ///     %3 : $@callee_guaranteed (@in_guaranteed Float) -> @out Float
+    ///     with_derivative {
+    ///       %4 : $@callee_guaranteed (@in_guaranteed Float) -> (
+    ///         @out Float,
+    ///         @owned @callee_guaranteed (@in_guaranteed Float) -> @out Float
+    ///       ),
+    ///       %5 : $@callee_guaranteed (@in_guaranteed Float) -> (
+    ///         @out Float,
+    ///         @owned @callee_guaranteed (@in_guaranteed Float) -> @out Float
+    ///       )
+    ///     }
+    ///
+    /// In particular:
+    ///
+    /// - The reabstraction %0 => %3 uses pattern `AP::Opaque`.
+    /// - The reabstraction %1 => %4 uses pattern
+    ///   `AP::OpaqueDerivativeFunction`, which maximally abstracts all the
+    ///   parameters, and abstracts the result as the tuple
+    ///   `(AP::Opaque, AP::OpaqueFunction)`.
+    /// - The reabstraction %2 => %5 similarly uses pattern
+    ///   `AP::OpaqueDerivativeFunction`.
+    OpaqueDerivativeFunction,
   };
 
-  class EncodedForeignErrorInfo {
+  class EncodedForeignInfo {
     unsigned Value;
+    
+    enum Error_t {
+      Error,
+    };
+    
+    enum Async_t {
+      Async,
+    };
+    
+  public:
+    enum ForeignKind {
+      IsNotForeign,
+      IsError,
+      IsAsync,
+    };
+
+  private:
+    friend AbstractionPattern;
+
+    EncodedForeignInfo() : Value(0) {}
+    EncodedForeignInfo(Error_t,
+                       unsigned errorParameterIndex,
+                       bool replaceParamWithVoid,
+                       bool stripsResultOptionality)
+      : Value(1
+              + (unsigned(IsError) - 1)
+              + (unsigned(stripsResultOptionality) << 1)
+              + (unsigned(replaceParamWithVoid) << 2)
+              + (errorParameterIndex << 3)) {
+        assert(getKind() == IsError);
+        assert(getErrorParamIndex() == errorParameterIndex);
+        assert(hasErrorParameterReplacedWithVoid() == replaceParamWithVoid);
+        assert(errorStripsResultOptionality() == stripsResultOptionality);
+      }
+
+    EncodedForeignInfo(Async_t,
+                       unsigned completionParameterIndex,
+                       Optional<unsigned> completionErrorParameterIndex)
+      : Value(1
+              + (unsigned(IsAsync) - 1)
+              + (unsigned(completionParameterIndex) << 1)
+              + ((completionErrorParameterIndex ? *completionErrorParameterIndex + 1
+                                                : 0) << 21)) {
+        assert(getKind() == IsAsync);
+        assert(getAsyncCompletionHandlerParamIndex() == completionParameterIndex);
+        assert(getAsyncCompletionHandlerErrorParamIndex() == completionErrorParameterIndex);
+      }
 
   public:
-    EncodedForeignErrorInfo() : Value(0) {}
-    EncodedForeignErrorInfo(unsigned errorParameterIndex,
-                            bool replaceParamWithVoid,
-                            bool stripsResultOptionality)
-      : Value(1 +
-              (unsigned(stripsResultOptionality)) +
-              (unsigned(replaceParamWithVoid) << 1) +
-              (errorParameterIndex << 2)) {}
-
-    static EncodedForeignErrorInfo
-    encode(const Optional<ForeignErrorConvention> &foreignError);
+    static EncodedForeignInfo
+    encode(const Optional<ForeignErrorConvention> &foreignError,
+           const Optional<ForeignAsyncConvention> &foreignAsync);
 
     bool hasValue() const { return Value != 0; }
-    bool hasErrorParameter() const { return hasValue(); }
-    bool hasUnreplacedErrorParameter() const {
-      return hasValue() && !isErrorParameterReplacedWithVoid();
+    ForeignKind getKind() const {
+      if (!hasValue())
+        return IsNotForeign;
+      
+      return ForeignKind((Value - 1 & 1) + 1);
     }
-
-    bool stripsResultOptionality() const {
-      assert(hasValue());
-      return (Value - 1) & 1;
-    }
-
-    bool isErrorParameterReplacedWithVoid() const {
-      assert(hasValue());
+    
+    bool errorStripsResultOptionality() const {
+      if (getKind() != IsError) return false;
       return (Value - 1) & 2;
     }
 
-    unsigned getErrorParameterIndex() const {
-      assert(hasValue());
-      return (Value - 1) >> 2;
+    bool hasErrorParameterReplacedWithVoid() const {
+      if (getKind() != IsError) return false;
+      return (Value - 1) & 4;
+    }
+
+    unsigned getErrorParamIndex() const {
+      assert(getKind() == IsError);
+      return (Value - 1) >> 3;
+    }
+    
+    unsigned getAsyncCompletionHandlerParamIndex() const {
+      assert(getKind() == IsAsync);
+      return ((Value - 1) >> 1) & 0xFFFFFu;
+    }
+    
+    Optional<unsigned> getAsyncCompletionHandlerErrorParamIndex() const {
+      assert(getKind() == IsAsync);
+
+      unsigned encodedValue = (Value - 1) >> 21;
+      if (encodedValue == 0) {
+        return llvm::None;
+      }
+      return encodedValue - 1;
+    }
+
+    unsigned getForeignParamIndex() const {
+      switch (getKind()) {
+      case IsNotForeign:
+        llvm_unreachable("no foreign param");
+      
+      case IsError:
+        return getErrorParamIndex();
+          
+      case IsAsync:
+        return getAsyncCompletionHandlerParamIndex();
+      }
+      llvm_unreachable("uncovered switch");
     }
 
     unsigned getOpaqueValue() const { return Value; }
-    static EncodedForeignErrorInfo fromOpaqueValue(unsigned value) {
-      EncodedForeignErrorInfo result;
+    static EncodedForeignInfo fromOpaqueValue(unsigned value) {
+      EncodedForeignInfo result;
       result.Value = value;
       return result;
     }
@@ -238,7 +378,7 @@ class AbstractionPattern {
   static constexpr const unsigned NumOtherDataBits = 28;
   static constexpr const unsigned MaxOtherData = (1 << NumOtherDataBits) - 1;
 
-  unsigned TheKind : 32 - NumOtherDataBits;
+  unsigned TheKind : 33 - NumOtherDataBits;
   unsigned OtherData : NumOtherDataBits;
   CanType OrigType;
   union {
@@ -282,6 +422,9 @@ class AbstractionPattern {
     case Kind::CXXMethodType:
     case Kind::CurriedCXXMethodType:
     case Kind::PartialCurriedCXXMethodType:
+    case Kind::CXXOperatorMethodType:
+    case Kind::CurriedCXXOperatorMethodType:
+    case Kind::PartialCurriedCXXOperatorMethodType:
       return true;
 
     default:
@@ -301,7 +444,7 @@ class AbstractionPattern {
     }
   }
 
-  bool hasStoredForeignErrorInfo() const {
+  bool hasStoredForeignInfo() const {
     return hasStoredObjCMethod();
   }
 
@@ -323,8 +466,10 @@ class AbstractionPattern {
     TheKind = unsigned(kind);
     OrigType = origType;
     GenericSig = CanGenericSignature();
-    if (OrigType->hasTypeParameter())
+    if (OrigType->hasTypeParameter()) {
+      assert(OrigType == signature->getCanonicalTypeInContext(origType));
       GenericSig = signature;
+    }
   }
 
   void initClangType(CanGenericSignature signature,
@@ -336,7 +481,7 @@ class AbstractionPattern {
 
   void initObjCMethod(CanGenericSignature signature,
                       CanType origType, const clang::ObjCMethodDecl *method,
-                      Kind kind, EncodedForeignErrorInfo errorInfo) {
+                      Kind kind, EncodedForeignInfo errorInfo) {
     initSwiftType(signature, origType, kind);
     ObjCMethod = method;
     OtherData = errorInfo.getOpaqueValue();
@@ -382,6 +527,14 @@ public:
     return AbstractionPattern(Kind::Invalid);
   }
 
+  static AbstractionPattern getOpaqueFunction() {
+    return AbstractionPattern(Kind::OpaqueFunction);
+  }
+
+  static AbstractionPattern getOpaqueDerivativeFunction() {
+    return AbstractionPattern(Kind::OpaqueDerivativeFunction);
+  }
+
   bool hasGenericSignature() const {
     switch (getKind()) {
     case Kind::Type:
@@ -396,10 +549,15 @@ public:
     case Kind::CXXMethodType:
     case Kind::CurriedCXXMethodType:
     case Kind::PartialCurriedCXXMethodType:
+    case Kind::CXXOperatorMethodType:
+    case Kind::CurriedCXXOperatorMethodType:
+    case Kind::PartialCurriedCXXOperatorMethodType:
       return true;
     case Kind::Invalid:
     case Kind::Opaque:
     case Kind::Tuple:
+    case Kind::OpaqueFunction:
+    case Kind::OpaqueDerivativeFunction:
       return false;
     }
     llvm_unreachable("Unhandled AbstractionPatternKind in switch");
@@ -409,7 +567,13 @@ public:
     assert(hasGenericSignature());
     return CanGenericSignature(GenericSig);
   }
-  
+
+  CanGenericSignature getGenericSignatureOrNull() const {
+    if (!hasGenericSignature())
+      return CanGenericSignature();
+    return CanGenericSignature(GenericSig);
+  }
+
   /// Return an open-coded abstraction pattern for a tuple.  The
   /// caller is responsible for ensuring that the storage for the
   /// tuple elements is valid for as long as the abstraction pattern is.
@@ -425,7 +589,8 @@ public:
   /// Objective-C method.
   static AbstractionPattern
   getCurriedObjCMethod(CanType origType, const clang::ObjCMethodDecl *method,
-                       const Optional<ForeignErrorConvention> &foreignError);
+                       const Optional<ForeignErrorConvention> &foreignError,
+                       const Optional<ForeignAsyncConvention> &foreignAsync);
 
   /// Return an abstraction pattern for the uncurried type of a C function
   /// imported as a method.
@@ -464,6 +629,10 @@ public:
   static AbstractionPattern
   getCurriedCXXMethod(CanType origType, const AbstractFunctionDecl *function);
 
+  static AbstractionPattern
+  getCurriedCXXOperatorMethod(CanType origType,
+                              const AbstractFunctionDecl *function);
+
   /// Return an abstraction pattern for the uncurried type of a C++ method.
   ///
   /// For example, if the original function is:
@@ -476,6 +645,15 @@ public:
     assert(isa<AnyFunctionType>(origType));
     AbstractionPattern pattern;
     pattern.initCXXMethod(nullptr, origType, method, Kind::CXXMethodType);
+    return pattern;
+  }
+
+  static AbstractionPattern
+  getCXXOperatorMethod(CanType origType, const clang::CXXMethodDecl *method) {
+    assert(isa<AnyFunctionType>(origType));
+    AbstractionPattern pattern;
+    pattern.initCXXMethod(nullptr, origType, method,
+                          Kind::CXXOperatorMethodType);
     return pattern;
   }
 
@@ -492,6 +670,16 @@ public:
     AbstractionPattern pattern;
     pattern.initCXXMethod(nullptr, origType, method,
                           Kind::CurriedCXXMethodType);
+    return pattern;
+  }
+
+  static AbstractionPattern
+  getCurriedCXXOperatorMethod(CanType origType,
+                              const clang::CXXMethodDecl *method) {
+    assert(isa<AnyFunctionType>(origType));
+    AbstractionPattern pattern;
+    pattern.initCXXMethod(nullptr, origType, method,
+                          Kind::CurriedCXXOperatorMethodType);
     return pattern;
   }
 
@@ -513,12 +701,21 @@ public:
     return pattern;
   }
   
+  /// Return an abstraction pattern for the type of the given struct field or enum case
+  /// substituted in `this` type.
+  ///
+  /// Note that, for most purposes, you should lower a field's type against its
+  /// *unsubstituted* interface type.
+  AbstractionPattern
+  unsafeGetSubstFieldType(ValueDecl *member,
+                          CanType origMemberType = CanType()) const;
+  
 private:
   /// Return an abstraction pattern for the curried type of an
   /// Objective-C method.
   static AbstractionPattern
   getCurriedObjCMethod(CanType origType, const clang::ObjCMethodDecl *method,
-                       EncodedForeignErrorInfo errorInfo) {
+                       EncodedForeignInfo errorInfo) {
     assert(isa<AnyFunctionType>(origType));
     AbstractionPattern pattern;
     pattern.initObjCMethod(nullptr, origType, method,
@@ -544,7 +741,7 @@ private:
   getPartialCurriedObjCMethod(CanGenericSignature signature,
                               CanType origType,
                               const clang::ObjCMethodDecl *method,
-                              EncodedForeignErrorInfo errorInfo) {
+                              EncodedForeignInfo errorInfo) {
     assert(isa<AnyFunctionType>(origType));
     AbstractionPattern pattern;
     pattern.initObjCMethod(signature, origType, method,
@@ -592,18 +789,30 @@ private:
     return pattern;
   }
 
+  static AbstractionPattern
+  getPartialCurriedCXXOperatorMethod(CanGenericSignature signature,
+                                     CanType origType,
+                                     const clang::CXXMethodDecl *method) {
+    assert(isa<AnyFunctionType>(origType));
+    AbstractionPattern pattern;
+    pattern.initCXXMethod(signature, origType, method,
+                          Kind::PartialCurriedCXXOperatorMethodType);
+    return pattern;
+  }
+
 public:
   /// Return an abstraction pattern for the type of an Objective-C method.
   static AbstractionPattern
   getObjCMethod(CanType origType, const clang::ObjCMethodDecl *method,
-                const Optional<ForeignErrorConvention> &foreignError);
+                const Optional<ForeignErrorConvention> &foreignError,
+                const Optional<ForeignAsyncConvention> &foreignAsync);
 
 private:
   /// Return an abstraction pattern for the uncurried type of an
   /// Objective-C method.
   static AbstractionPattern
   getObjCMethod(CanType origType, const clang::ObjCMethodDecl *method,
-                EncodedForeignErrorInfo errorInfo) {
+                EncodedForeignInfo errorInfo) {
     assert(isa<AnyFunctionType>(origType));
     AbstractionPattern pattern;
     pattern.initObjCMethod(nullptr, origType, method, Kind::ObjCMethodType,
@@ -648,11 +857,34 @@ public:
     return getKind() != Kind::Invalid;
   }
 
+  bool isTypeParameterOrOpaqueArchetype() const {
+    switch (getKind()) {
+    case Kind::Opaque:
+      return true;
+    case Kind::Type:
+    case Kind::ClangType:
+    case Kind::Discard: {
+      auto type = getType();
+      if (isa<DependentMemberType>(type) ||
+          isa<GenericTypeParamType>(type)) {
+        return true;
+      }
+      if (isa<ArchetypeType>(type)) {
+        return true;
+      }
+      return false;
+    }
+    default:
+      return false;
+    }
+  }
+
   bool isTypeParameter() const {
     switch (getKind()) {
     case Kind::Opaque:
       return true;
     case Kind::Type:
+    case Kind::ClangType:
     case Kind::Discard: {
       auto type = getType();
       if (isa<DependentMemberType>(type) ||
@@ -668,12 +900,13 @@ public:
       return false;
     }
   }
-
+  
   /// Is this an interface type that is subject to a concrete
   /// same-type constraint?
   bool isConcreteType() const;
 
-  bool requiresClass();
+  bool requiresClass() const;
+  LayoutConstraint getLayoutConstraint() const;
 
   /// Return the Swift type which provides structure for this
   /// abstraction pattern.
@@ -689,6 +922,10 @@ public:
       llvm_unreachable("opaque pattern has no type");
     case Kind::Tuple:
       llvm_unreachable("open-coded tuple pattern has no type");
+    case Kind::OpaqueFunction:
+      llvm_unreachable("opaque function pattern has no type");
+    case Kind::OpaqueDerivativeFunction:
+      llvm_unreachable("opaque derivative function pattern has no type");
     case Kind::ClangType:
     case Kind::CurriedObjCMethodType:
     case Kind::PartialCurriedObjCMethodType:
@@ -699,6 +936,9 @@ public:
     case Kind::CXXMethodType:
     case Kind::CurriedCXXMethodType:
     case Kind::PartialCurriedCXXMethodType:
+    case Kind::CXXOperatorMethodType:
+    case Kind::CurriedCXXOperatorMethodType:
+    case Kind::PartialCurriedCXXOperatorMethodType:
     case Kind::Type:
     case Kind::Discard:
       return OrigType;
@@ -722,6 +962,8 @@ public:
     case Kind::Invalid:
     case Kind::Opaque:
     case Kind::Tuple:
+    case Kind::OpaqueFunction:
+    case Kind::OpaqueDerivativeFunction:
       llvm_unreachable("type cannot be replaced on pattern without type");
     case Kind::ClangType:
     case Kind::CurriedObjCMethodType:
@@ -733,6 +975,9 @@ public:
     case Kind::CXXMethodType:
     case Kind::CurriedCXXMethodType:
     case Kind::PartialCurriedCXXMethodType:
+    case Kind::CXXOperatorMethodType:
+    case Kind::CurriedCXXOperatorMethodType:
+    case Kind::PartialCurriedCXXOperatorMethodType:
     case Kind::Type:
     case Kind::Discard:
       assert(signature || !type->hasTypeParameter());
@@ -757,6 +1002,8 @@ public:
     case Kind::Tuple:
     case Kind::Type:
     case Kind::Discard:
+    case Kind::OpaqueFunction:
+    case Kind::OpaqueDerivativeFunction:
       return false;
     case Kind::ClangType:
     case Kind::PartialCurriedObjCMethodType:
@@ -768,6 +1015,9 @@ public:
     case Kind::CXXMethodType:
     case Kind::CurriedCXXMethodType:
     case Kind::PartialCurriedCXXMethodType:
+    case Kind::CXXOperatorMethodType:
+    case Kind::CurriedCXXOperatorMethodType:
+    case Kind::PartialCurriedCXXOperatorMethodType:
       return true;
     }
     llvm_unreachable("bad kind");
@@ -805,7 +1055,9 @@ public:
   /// If so, it is legal to call getCXXMethod().
   bool isCXXMethod() const {
     return (getKind() == Kind::CXXMethodType ||
-            getKind() == Kind::CurriedCXXMethodType);
+            getKind() == Kind::CurriedCXXMethodType ||
+            getKind() == Kind::CXXOperatorMethodType ||
+            getKind() == Kind::CurriedCXXOperatorMethodType);
   }
 
   const clang::CXXMethodDecl *getCXXMethod() const {
@@ -813,9 +1065,14 @@ public:
     return CXXMethod;
   }
 
-  EncodedForeignErrorInfo getEncodedForeignErrorInfo() const {
-    assert(hasStoredForeignErrorInfo());
-    return EncodedForeignErrorInfo::fromOpaqueValue(OtherData);
+  bool isOpaqueFunctionOrOpaqueDerivativeFunction() const {
+    return (getKind() == Kind::OpaqueFunction ||
+            getKind() == Kind::OpaqueDerivativeFunction);
+  }
+
+  EncodedForeignInfo getEncodedForeignInfo() const {
+    assert(hasStoredForeignInfo());
+    return EncodedForeignInfo::fromOpaqueValue(OtherData);
   }
   
   bool hasForeignErrorStrippingResultOptionality() const {
@@ -835,12 +1092,17 @@ public:
     case Kind::CXXMethodType:
     case Kind::CurriedCXXMethodType:
     case Kind::PartialCurriedCXXMethodType:
+    case Kind::CXXOperatorMethodType:
+    case Kind::CurriedCXXOperatorMethodType:
+    case Kind::PartialCurriedCXXOperatorMethodType:
+    case Kind::OpaqueFunction:
+    case Kind::OpaqueDerivativeFunction:
       return false;
     case Kind::PartialCurriedObjCMethodType:
     case Kind::CurriedObjCMethodType:
     case Kind::ObjCMethodType: {
-      auto errorInfo = getEncodedForeignErrorInfo();
-      return (errorInfo.hasValue() && errorInfo.stripsResultOptionality());
+      auto errorInfo = getEncodedForeignInfo();
+      return errorInfo.errorStripsResultOptionality();
     }
     }
     llvm_unreachable("bad kind");
@@ -856,6 +1118,9 @@ public:
       return typename CanTypeWrapperTraits<TYPE>::type();
     case Kind::Tuple:
       return typename CanTypeWrapperTraits<TYPE>::type();
+    case Kind::OpaqueFunction:
+    case Kind::OpaqueDerivativeFunction:
+      return typename CanTypeWrapperTraits<TYPE>::type();
     case Kind::ClangType:
     case Kind::PartialCurriedObjCMethodType:
     case Kind::CurriedObjCMethodType:
@@ -866,6 +1131,9 @@ public:
     case Kind::CXXMethodType:
     case Kind::CurriedCXXMethodType:
     case Kind::PartialCurriedCXXMethodType:
+    case Kind::CXXOperatorMethodType:
+    case Kind::CurriedCXXOperatorMethodType:
+    case Kind::PartialCurriedCXXOperatorMethodType:
     case Kind::Type:
     case Kind::Discard:
       return dyn_cast<TYPE>(getType());
@@ -894,6 +1162,11 @@ public:
     case Kind::CXXMethodType:
     case Kind::CurriedCXXMethodType:
     case Kind::PartialCurriedCXXMethodType:
+    case Kind::CXXOperatorMethodType:
+    case Kind::CurriedCXXOperatorMethodType:
+    case Kind::PartialCurriedCXXOperatorMethodType:
+    case Kind::OpaqueFunction:
+    case Kind::OpaqueDerivativeFunction:
       // We assume that the Clang type might provide additional structure.
       return false;
     case Kind::Type:
@@ -921,6 +1194,11 @@ public:
     case Kind::CXXMethodType:
     case Kind::CurriedCXXMethodType:
     case Kind::PartialCurriedCXXMethodType:
+    case Kind::CXXOperatorMethodType:
+    case Kind::CurriedCXXOperatorMethodType:
+    case Kind::PartialCurriedCXXOperatorMethodType:
+    case Kind::OpaqueFunction:
+    case Kind::OpaqueDerivativeFunction:
       return false;
     case Kind::Tuple:
       return true;
@@ -946,6 +1224,11 @@ public:
     case Kind::CXXMethodType:
     case Kind::CurriedCXXMethodType:
     case Kind::PartialCurriedCXXMethodType:
+    case Kind::CXXOperatorMethodType:
+    case Kind::CurriedCXXOperatorMethodType:
+    case Kind::PartialCurriedCXXOperatorMethodType:
+    case Kind::OpaqueFunction:
+    case Kind::OpaqueDerivativeFunction:
       llvm_unreachable("pattern is not a tuple");      
     case Kind::Tuple:
       return getNumTupleElements_Stored();
@@ -981,6 +1264,25 @@ public:
   /// it.
   AbstractionPattern getReferenceStorageReferentType() const;
 
+  /// Given that the value being abstracted is a function type, return the
+  /// abstraction pattern for the derivative function.
+  ///
+  /// The arguments are the same as the arguments to
+  /// `AnyFunctionType::getAutoDiffDerivativeFunctionType()`.
+  AbstractionPattern getAutoDiffDerivativeFunctionType(
+      IndexSubset *parameterIndices, AutoDiffDerivativeFunctionKind kind,
+      LookupConformanceFn lookupConformance,
+      GenericSignature derivativeGenericSignature = GenericSignature(),
+      bool makeSelfParamFirst = false);
+
+  /// If this pattern refers to a foreign ObjC method that was imported as async, this returns
+  /// the abstraction pattern for the completion callback with the original ObjC block type.
+  ///
+  /// Otherwise, this produces the default fully-concrete abstraction pattern for the given
+  /// Swift type.
+  AbstractionPattern getObjCMethodAsyncCompletionHandlerType(
+                                     CanType swiftCompletionHandlerType) const;
+  
   void dump() const LLVM_ATTRIBUTE_USED;
   void print(raw_ostream &OS) const;
 };

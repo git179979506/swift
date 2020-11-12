@@ -1,3 +1,5 @@
+set_swift_llvm_is_available()
+
 if(CMAKE_HOST_SYSTEM_NAME STREQUAL Windows)
   set(SWIFT_GYB_FLAGS --line-directive "^\"#line %(line)d \\\"%(file)s\\\"^\"")
 else()
@@ -22,14 +24,14 @@ add_swift_host_library(swiftParse STATIC
   PersistentParserState.cpp
   Scope.cpp
   SyntaxParsingCache.cpp
-  SyntaxParsingContext.cpp
-
-  GYB_SOURCES
+  SyntaxParsingContext.cpp)
+_swift_gyb_target_sources(swiftParse PRIVATE
     ParsedSyntaxBuilders.cpp.gyb
     ParsedSyntaxNodes.cpp.gyb
     ParsedSyntaxRecorder.cpp.gyb)
 target_link_libraries(swiftParse PRIVATE
   swiftAST
-  swiftSyntax)
+  swiftSyntax
+  swiftSyntaxParse)
 
 add_dependencies(swiftParse swift-parse-syntax-generated-headers)

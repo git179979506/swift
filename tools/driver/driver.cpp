@@ -15,6 +15,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "swift/AST/DiagnosticEngine.h"
+#include "swift/AST/DiagnosticsDriver.h"
 #include "swift/Basic/LLVMInitialize.h"
 #include "swift/Basic/PrettyStackTrace.h"
 #include "swift/Basic/Program.h"
@@ -70,7 +71,15 @@ extern int modulewrap_main(ArrayRef<const char *> Args, const char *Argv0,
 extern int swift_indent_main(ArrayRef<const char *> Args, const char *Argv0,
                              void *MainAddr);
 
-/// Determine if the given invocation should run as a subcommand.
+/// Run 'swift-symbolgraph-extract'
+extern int swift_symbolgraph_extract_main(ArrayRef<const char *> Args, const char *Argv0,
+void *MainAddr);
+
+/// Determine if the given invocation should run as a "subcommand".
+///
+/// Examples of "subcommands" are 'swift build' or 'swift test', which are
+/// usually used to invoke the Swift package manager executables 'swift-build'
+/// and 'swift-test', respectively.
 ///
 /// \param ExecName The name of the argv[0] we were invoked as.
 /// \param SubcommandName On success, the full name of the subcommand to invoke.
@@ -132,6 +141,15 @@ static int run_driver(StringRef ExecName,
                                                 argv.data()+argv.size()),
                              argv[0], (void *)(intptr_t)getExecutablePath);
     }
+
+    // Run the integrated Swift frontend when called as "swift-frontend" but
+    // without a leading "-frontend".
+    if (!FirstArg.startswith("--driver-mode=")
+        && ExecName == "swift-frontend") {
+      return performFrontend(llvm::makeArrayRef(argv.data()+1,
+                                                argv.data()+argv.size()),
+                             argv[0], (void *)(intptr_t)getExecutablePath);
+    }
   }
 
   std::string Path = getExecutablePath(argv[0]);
@@ -141,6 +159,48 @@ static int run_driver(StringRef ExecName,
   SourceManager SM;
   DiagnosticEngine Diags(SM);
   Diags.addConsumer(PDC);
+
+  std::string newDriverName;
+  if (auto driverNameOp = llvm::sys::Process::GetEnv("SWIFT_USE_NEW_DRIVER")) {
+    newDriverName = driverNameOp.getValue();
+  }
+  auto disallowForwarding = llvm::find_if(argv, [](const char* arg) {
+    return StringRef(arg) == "-disallow-use-new-driver";
+  }) != argv.end();
+  // Forwarding calls to the swift driver if the C++ driver is invoked as `swift`
+  // or `swiftc`, and an environment variable SWIFT_USE_NEW_DRIVER is defined.
+  if (!newDriverName.empty() && !disallowForwarding &&
+      (ExecName == "swift" || ExecName == "swiftc")) {
+    SmallString<256> NewDriverPath(llvm::sys::path::parent_path(Path));
+    llvm::sys::path::append(NewDriverPath, newDriverName);
+    if (!llvm::sys::fs::exists(NewDriverPath)) {
+      Diags.diagnose(SourceLoc(), diag::remark_forwarding_driver_not_there,
+                     NewDriverPath);
+    } else {
+      SmallVector<const char *, 256> subCommandArgs;
+      // Rewrite the program argument.
+      subCommandArgs.push_back(NewDriverPath.c_str());
+      if (ExecName == "swiftc") {
+        subCommandArgs.push_back("--driver-mode=swiftc");
+      } else {
+        assert(ExecName == "swift");
+        subCommandArgs.push_back("--driver-mode=swift");
+      }
+      subCommandArgs.insert(subCommandArgs.end(), argv.begin() + 1, argv.end());
+
+      // Execute the subcommand.
+      subCommandArgs.push_back(nullptr);
+      Diags.diagnose(SourceLoc(), diag::remark_forwarding_to_new_driver,
+                     NewDriverPath);
+      ExecuteInPlace(NewDriverPath.c_str(), subCommandArgs.data());
+
+      // If we reach here then an error occurred (typically a missing path).
+      std::string ErrorString = llvm::sys::StrError();
+      llvm::errs() << "error: unable to invoke subcommand: " << subCommandArgs[0]
+                   << " (" << ErrorString << ")\n";
+      return 2;
+    }
+  }
 
   Driver TheDriver(Path, ExecName, argv, Diags);
   switch (TheDriver.getDriverKind()) {
@@ -152,6 +212,8 @@ static int run_driver(StringRef ExecName,
     return swift_indent_main(
       TheDriver.getArgsWithoutProgramNameAndDriverMode(argv),
       argv[0], (void *)(intptr_t)getExecutablePath);
+  case Driver::DriverKind::SymbolGraph:
+      return swift_symbolgraph_extract_main(TheDriver.getArgsWithoutProgramNameAndDriverMode(argv), argv[0], (void *)(intptr_t)getExecutablePath);
   default:
     break;
   }
@@ -173,6 +235,8 @@ static int run_driver(StringRef ExecName,
 
   if (C) {
     std::unique_ptr<sys::TaskQueue> TQ = TheDriver.buildTaskQueue(*C);
+    if (!TQ)
+        return 1;
     return C->performJobs(std::move(TQ));
   }
 

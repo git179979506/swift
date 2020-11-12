@@ -2,10 +2,12 @@
 // RUN: %target-build-swift -lswiftSwiftReflectionTest -I %S/Inputs/EmptyStruct/ %s -o %t/reflect_empty_struct
 // RUN: %target-codesign %t/reflect_empty_struct
 
-// RUN: %target-run %target-swift-reflection-test %t/reflect_empty_struct | %FileCheck %s --check-prefix=CHECK-%target-ptrsize --dump-input fail
+// RUN: %target-run %target-swift-reflection-test %t/reflect_empty_struct | %FileCheck %s --check-prefix=CHECK-%target-ptrsize --dump-input fail %add_num_extra_inhabitants
 
-// REQUIRES: objc_interop
+// REQUIRES: reflection_test_support
 // REQUIRES: executable_test
+// REQUIRES: OS=macosx
+// UNSUPPORTED: use_os_stdlib
 
 import SwiftReflectionTest
 
@@ -31,17 +33,17 @@ reflect(object: obj)
 // CHECK-64: Type info:
 // CHECK-64: (class_instance size=80 alignment=8 stride=80 num_extra_inhabitants=0 bitwise_takable=1
 // CHECK-64:   (field name=a offset=16
-// CHECK-64:     (builtin size=0 alignment=1 stride=1 num_extra_inhabitants=0 bitwise_takable=1))
+// CHECK-64:     ({{builtin|struct}} size=0 alignment={{1|4}} stride=1 num_extra_inhabitants=0 bitwise_takable=1))
 // CHECK-64:   (field name=b offset=16
-// CHECK-64:     (opaque_existential size=32 alignment=8 stride=32 num_extra_inhabitants=2147483647 bitwise_takable=1
+// CHECK-64:     (opaque_existential size=32 alignment=8 stride=32 num_extra_inhabitants=[[#num_extra_inhabitants_64bit]] bitwise_takable=1
 // CHECK-64:       (field name=metadata offset=24
-// CHECK-64:         (builtin size=8 alignment=8 stride=8 num_extra_inhabitants=2147483647 bitwise_takable=1))))
+// CHECK-64:         (builtin size=8 alignment=8 stride=8 num_extra_inhabitants=[[#num_extra_inhabitants_64bit]] bitwise_takable=1))))
 // CHECK-64:   (field name=c offset=48
-// CHECK-64:     (builtin size=0 alignment=4 stride=1 num_extra_inhabitants=0 bitwise_takable=1))
+// CHECK-64:     ({{builtin|struct}} size=0 alignment={{1|4}} stride=1 num_extra_inhabitants=0 bitwise_takable=1))
 // CHECK-64:   (field name=d offset=48
-// CHECK-64:     (opaque_existential size=32 alignment=8 stride=32 num_extra_inhabitants=2147483647 bitwise_takable=1
+// CHECK-64:     (opaque_existential size=32 alignment=8 stride=32 num_extra_inhabitants=[[#num_extra_inhabitants_64bit]] bitwise_takable=1
 // CHECK-64:       (field name=metadata offset=24
-// CHECK-64:         (builtin size=8 alignment=8 stride=8 num_extra_inhabitants=2147483647 bitwise_takable=1)))))
+// CHECK-64:         (builtin size=8 alignment=8 stride=8 num_extra_inhabitants=[[#num_extra_inhabitants_64bit]] bitwise_takable=1)))))
 
 // CHECK-32: Reflecting an object.
 // CHECK-32: Instance pointer in child address space: 0x{{[0-9a-fA-F]+}}
@@ -51,13 +53,13 @@ reflect(object: obj)
 // CHECK-32: Type info:
 // CHECK-32: (class_instance size=40 alignment=4 stride=40 num_extra_inhabitants=0 bitwise_takable=1
 // CHECK-32:   (field name=a offset=8
-// CHECK-32:     (builtin size=0 alignment=1 stride=1 num_extra_inhabitants=0 bitwise_takable=1))
+// CHECK-32:     ({{builtin|struct}} size=0 alignment={{1|4}} stride=1 num_extra_inhabitants=0 bitwise_takable=1))
 // CHECK-32:   (field name=b offset=8
 // CHECK-32:     (opaque_existential size=16 alignment=4 stride=16 num_extra_inhabitants=4096 bitwise_takable=1
 // CHECK-32:       (field name=metadata offset=12
 // CHECK-32:         (builtin size=4 alignment=4 stride=4 num_extra_inhabitants=4096 bitwise_takable=1))))
 // CHECK-32:   (field name=c offset=24
-// CHECK-32:     (builtin size=0 alignment=4 stride=1 num_extra_inhabitants=0 bitwise_takable=1))
+// CHECK-32:     ({{builtin|struct}} size=0 alignment={{1|4}} stride=1 num_extra_inhabitants=0 bitwise_takable=1))
 // CHECK-32:   (field name=d offset=24
 // CHECK-32:     (opaque_existential size=16 alignment=4 stride=16 num_extra_inhabitants=4096 bitwise_takable=1
 // CHECK-32:       (field name=metadata offset=12

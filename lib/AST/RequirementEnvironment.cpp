@@ -73,7 +73,7 @@ RequirementEnvironment::RequirementEnvironment(
   // appear in the synthetic signature.
   unsigned depth = 0;
   if (covariantSelf) {
-    depth++;
+    ++depth;
   }
   if (conformanceSig) {
     depth += conformanceSig->getGenericParams().back()->getDepth() + 1;
@@ -140,7 +140,7 @@ RequirementEnvironment::RequirementEnvironment(
       reqSig->getRequirements().size() == 1) {
     syntheticSignature = conformanceDC->getGenericSignatureOfContext();
     if (syntheticSignature) {
-      syntheticSignature = syntheticSignature->getCanonicalSignature();
+      syntheticSignature = syntheticSignature.getCanonicalSignature();
       syntheticEnvironment =
         syntheticSignature->getGenericEnvironment();
     }

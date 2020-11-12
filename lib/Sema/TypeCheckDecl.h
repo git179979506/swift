@@ -33,6 +33,7 @@ const ConstructorDecl *findNonImplicitRequiredInit(const ConstructorDecl *CD);
 
 // Implemented in TypeCheckDeclOverride.cpp
 bool checkOverrides(ValueDecl *decl);
+void checkImplementationOnlyOverride(const ValueDecl *VD);
 
 // Implemented in TypeCheckStorage.cpp
 void setBoundVarsTypeError(Pattern *pattern, ASTContext &ctx);
@@ -56,11 +57,8 @@ Optional<AutomaticEnumValueKind> computeAutomaticEnumValueKind(EnumDecl *ED);
 void validatePrecedenceGroup(PrecedenceGroupDecl *PGD);
 
 bool checkDesignatedTypes(OperatorDecl *OD,
-                          ArrayRef<Identifier> identifiers,
-                          ArrayRef<SourceLoc> identifierLocs,
-                          ASTContext &ctx);
+                          ArrayRef<Located<Identifier>> identifiers);
 
 }
 
 #endif
-

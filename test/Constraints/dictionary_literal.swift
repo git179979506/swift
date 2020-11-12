@@ -63,14 +63,61 @@ var _: MyDictionary<String, Int>? = ["foo", 1]  // expected-error {{dictionary o
 var _: MyDictionary<String, Int>? = ["foo", 1, "bar", 42]  // expected-error {{dictionary of type 'MyDictionary<String, Int>' cannot be initialized with array literal}}
 // expected-note @-1 {{did you mean to use a dictionary literal instead?}} {{43-44=:}} {{53-54=:}}
 
-var _: MyDictionary<String, Int>? = ["foo", 1.0, 2]  // expected-error {{cannot convert value of type '[Double]' to specified type 'MyDictionary<String, Int>?'}}
-// expected-error@-1 {{cannot convert value of type 'String' to expected element type 'Double'}}
+var _: MyDictionary<String, Int>? = ["foo", 1.0, 2]  // expected-error {{dictionary of type 'MyDictionary<String, Int>' cannot be initialized with array literal}}
+// expected-note@-1 {{did you mean to use a dictionary literal instead?}} {{none}}
 
 var _: MyDictionary<String, Int>? = ["foo" : 1.0]  // expected-error {{cannot convert value of type 'Double' to expected dictionary value type 'MyDictionary<String, Int>.Value' (aka 'Int')}}
 
 
 // <rdar://problem/24058895> QoI: Should handle [] in dictionary contexts better
 var _: [Int: Int] = []  // expected-error {{use [:] to get an empty dictionary literal}} {{22-22=:}}
+var _ = useDictStringInt([]) // expected-error {{use [:] to get an empty dictionary literal}} {{27-27=:}}
+var _: [[Int: Int]] = [[]] // expected-error {{use [:] to get an empty dictionary literal}} {{25-25=:}}
+var _: [[Int: Int]?] = [[]] // expected-error {{use [:] to get an empty dictionary literal}} {{26-26=:}}
+var assignDict = [1: 2]
+assignDict = [] // expected-error {{use [:] to get an empty dictionary literal}} {{15-15=:}}
+
+var _: [Int: Int] = [1] // expected-error {{dictionary of type '[Int : Int]' cannot be initialized with array literal}}
+// expected-note@-1 {{did you mean to use a dictionary literal instead?}} {{23-23=: <#value#>}}
+
+var _: [Float: Int] = [1] // expected-error {{dictionary of type '[Float : Int]' cannot be initialized with array literal}}
+// expected-note@-1 {{did you mean to use a dictionary literal instead?}} {{25-25=: <#value#>}}
+
+var _: [Int: Int] = ["foo"] // expected-error {{dictionary of type '[Int : Int]' cannot be initialized with array literal}}
+// expected-note@-1 {{did you mean to use a dictionary literal instead?}} {{27-27=: <#value#>}}
+// expected-error@-2 {{cannot convert value of type 'String' to expected dictionary key type 'Int'}}
+
+var _ = useDictStringInt(["Key"]) // expected-error {{dictionary of type 'DictStringInt' cannot be used with array literal}}
+// expected-note@-1 {{did you mean to use a dictionary literal instead?}} {{32-32=: <#value#>}}
+
+var _ = useDictStringInt([4]) // expected-error {{dictionary of type 'DictStringInt' cannot be used with array literal}}
+// expected-note@-1 {{did you mean to use a dictionary literal instead?}} {{28-28=: <#value#>}}
+// expected-error@-2 {{cannot convert value of type 'Int' to expected dictionary key type 'DictStringInt.Key' (aka 'String')}}
+
+var _: [[Int: Int]] = [[5]] // expected-error {{dictionary of type '[Int : Int]' cannot be used with array literal}}
+// expected-note@-1 {{did you mean to use a dictionary literal instead?}} {{26-26=: <#value#>}}
+
+var _: [[Int: Int]] = [["bar"]] // expected-error {{dictionary of type '[Int : Int]' cannot be used with array literal}}
+// expected-note@-1 {{did you mean to use a dictionary literal instead?}} {{30-30=: <#value#>}}
+// expected-error@-2 {{cannot convert value of type 'String' to expected dictionary key type 'Int'}}
+
+assignDict = [1] // expected-error {{dictionary of type '[Int : Int]' cannot be used with array literal}}
+// expected-note@-1 {{did you mean to use a dictionary literal instead?}} {{16-16=: <#value#>}}
+
+assignDict = [""] // expected-error {{dictionary of type '[Int : Int]' cannot be used with array literal}}
+// expected-note@-1 {{did you mean to use a dictionary literal instead?}} {{17-17=: <#value#>}}
+// expected-error@-2 {{cannot convert value of type 'String' to expected dictionary key type 'Int'}}
+
+func arrayLiteralDictionaryMismatch<T>(a: inout T) where T: ExpressibleByDictionaryLiteral, T.Key == Int, T.Value == Int {
+  a = [] // expected-error {{use [:] to get an empty dictionary literal}} {{8-8=:}}
+
+  a = [1] // expected-error {{dictionary of type 'T' cannot be used with array literal}}
+  // expected-note@-1 {{did you mean to use a dictionary literal instead?}} {{9-9=: <#value#>}}
+
+  a = [""] // expected-error {{dictionary of type 'T' cannot be used with array literal}}
+  // expected-note@-1 {{did you mean to use a dictionary literal instead?}} {{10-10=: <#value#>}}
+  // expected-error@-2 {{cannot convert value of type 'String' to expected dictionary key type 'Int'}}
+}
 
 
 class A { }

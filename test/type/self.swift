@@ -270,3 +270,47 @@ class Foo {
     Self.value * 2
   }()
 }
+
+// https://bugs.swift.org/browse/SR-11681 - duplicate diagnostics
+struct Box<T> {
+  let boxed: T
+}
+
+class Boxer {
+  lazy var s = Box<Self>(boxed: self as! Self)
+  // expected-error@-1 {{stored property cannot have covariant 'Self' type}}
+  // expected-error@-2 {{mutable property cannot have covariant 'Self' type}}
+
+  var t = Box<Self>(boxed: Self())
+  // expected-error@-1 {{stored property cannot have covariant 'Self' type}}
+  // expected-error@-2 {{covariant 'Self' type cannot be referenced from a stored property initializer}}
+
+  required init() {}
+}
+
+// https://bugs.swift.org/browse/SR-12133 - a type named 'Self' should be found first
+struct OuterType {
+  struct `Self` {
+    let string: String
+  }
+
+  var foo: `Self`? {
+    let optional: String? = "foo"
+    return optional.map { `Self`(string: $0) }
+  }
+}
+
+// rdar://69804933 - CSApply assigns wrong type to MemberRefExpr for property with
+// DynamicSelfType
+class HasDynamicSelfProperty {
+  var me: Self {
+    return self
+  }
+}
+
+// SILGen doesn't care about the MemberRefExpr's type, so it's hard to come up with an
+// example that actually fails. Here, the rogue 'Self' type was diagnosed as being invalid
+// in a stored property initializer.
+class UsesDynamicSelfProperty {
+  var c = HasDynamicSelfProperty().me
+}

@@ -64,6 +64,32 @@ func _deallocateUninitializedArray<Element>(
   array._deallocateUninitialized()
 }
 
+#if !INTERNAL_CHECKS_ENABLED
+@_alwaysEmitIntoClient
+@_semantics("array.finalize_intrinsic")
+@_effects(readnone)
+public // COMPILER_INTRINSIC
+func _finalizeUninitializedArray<Element>(
+  _ array: __owned Array<Element>
+) -> Array<Element> {
+  var mutableArray = array
+  mutableArray._endMutation()
+  return mutableArray
+}
+#else
+// When asserts are enabled, _endCOWMutation writes to _native.isImmutable
+// So we cannot have @_effects(readnone)
+@_alwaysEmitIntoClient
+@_semantics("array.finalize_intrinsic")
+public // COMPILER_INTRINSIC
+func _finalizeUninitializedArray<Element>(
+  _ array: __owned Array<Element>
+) -> Array<Element> {
+  var mutableArray = array
+  mutableArray._endMutation()
+  return mutableArray
+}
+#endif
 
 extension Collection {  
   // Utility method for collections that wish to implement
@@ -136,6 +162,23 @@ internal func _expectEnd<C: Collection>(of s: C, is i: C.Index) {
 @inlinable
 internal func _growArrayCapacity(_ capacity: Int) -> Int {
   return capacity * 2
+}
+
+@_alwaysEmitIntoClient
+internal func _growArrayCapacity(
+  oldCapacity: Int, minimumCapacity: Int, growForAppend: Bool
+) -> Int {
+  if growForAppend {
+    if oldCapacity < minimumCapacity {
+      // When appending to an array, grow exponentially.
+      return Swift.max(minimumCapacity, _growArrayCapacity(oldCapacity))
+    }
+    return oldCapacity
+  }
+  // If not for append, just use the specified capacity, ignoring oldCapacity.
+  // This means that we "shrink" the buffer in case minimumCapacity is less
+  // than oldCapacity.
+  return minimumCapacity
 }
 
 //===--- generic helpers --------------------------------------------------===//

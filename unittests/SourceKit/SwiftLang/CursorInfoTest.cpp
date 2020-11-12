@@ -116,6 +116,7 @@ public:
 
   CursorInfoTest()
       : Ctx(*new SourceKit::Context(getRuntimeLibPath(),
+                                    /*diagnosticDocumentationPath*/ "",
                                     SourceKit::createSwiftLangSupport,
                                     /*dispatchOnMain=*/false)) {
     // This is avoiding destroying \p SourceKit::Context because another
@@ -151,14 +152,14 @@ public:
       [&](const RequestResult<CursorInfoData> &Result) {
         assert(!Result.isCancelled());
         if (Result.isError()) {
-          TestInfo.Error = Result.getError();
+          TestInfo.Error = Result.getError().str();
           sema.signal();
           return;
         }
         const CursorInfoData &Info = Result.value();
-        TestInfo.Name = Info.Name;
-        TestInfo.Typename = Info.TypeName;
-        TestInfo.Filename = Info.Filename;
+        TestInfo.Name = Info.Name.str();
+        TestInfo.Typename = Info.TypeName.str();
+        TestInfo.Filename = Info.Filename.str();
         TestInfo.DeclarationLoc = Info.DeclarationLoc;
         sema.signal();
       });

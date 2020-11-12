@@ -18,7 +18,6 @@
 #define SWIFT_AST_LAZYRESOLVER_H
 
 #include "swift/AST/ProtocolConformanceRef.h"
-#include "swift/AST/TypeLoc.h"
 #include "llvm/ADT/PointerEmbeddedInt.h"
 
 namespace swift {
@@ -81,10 +80,7 @@ public:
 
   /// Populates a vector with all members of \p IDC that have DeclName
   /// matching \p N.
-  ///
-  /// Returns None if an error occurred \em or named member-lookup
-  /// was otherwise unsupported in this implementation or Decl.
-  virtual Optional<TinyPtrVector<ValueDecl *>>
+  virtual TinyPtrVector<ValueDecl *>
   loadNamedMembers(const IterableDeclContext *IDC, DeclBaseName N,
                    uint64_t contextData) = 0;
 
@@ -103,6 +99,25 @@ public:
   virtual void
   loadRequirementSignature(const ProtocolDecl *proto, uint64_t contextData,
                            SmallVectorImpl<Requirement> &requirements) = 0;
+
+  /// Returns the replaced decl for a given @_dynamicReplacement(for:) attribute.
+  virtual ValueDecl *
+  loadDynamicallyReplacedFunctionDecl(const DynamicReplacementAttr *DRA,
+                                      uint64_t contextData) = 0;
+
+  /// Returns the referenced original declaration for a `@derivative(of:)`
+  /// attribute.
+  virtual AbstractFunctionDecl *
+  loadReferencedFunctionDecl(const DerivativeAttr *DA,
+                             uint64_t contextData) = 0;
+
+  /// Returns the type for a given @_typeEraser() attribute.
+  virtual Type loadTypeEraserType(const TypeEraserAttr *TRA,
+                                  uint64_t contextData) = 0;
+
+  // Returns the target parameter of the `@_specialize` attribute or null.
+  virtual ValueDecl *loadTargetFunctionDecl(const SpecializeAttr *attr,
+                                            uint64_t contextData) = 0;
 };
 
 /// A class that can lazily load conformances from a serialized format.

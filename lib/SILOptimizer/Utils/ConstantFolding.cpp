@@ -23,6 +23,7 @@
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/APSInt.h"
 #include "llvm/ADT/Statistic.h"
+#include "llvm/IR/Intrinsics.h"
 #include "llvm/Support/Debug.h"
 
 #define DEBUG_TYPE "sil-constant-folding"
@@ -288,9 +289,9 @@ constantFoldBinaryWithOverflow(BuiltinInst *BI, BuiltinValueKind ID,
 static SILValue
 constantFoldCountLeadingOrTrialingZeroIntrinsic(BuiltinInst *bi,
                                                 bool countLeadingZeros) {
-  assert(bi->getIntrinsicID() == llvm::Intrinsic::ctlz ||
-         bi->getIntrinsicID() == llvm::Intrinsic::cttz &&
-             "Invalid Intrinsic - expected Ctlz/Cllz");
+  assert((bi->getIntrinsicID() == (llvm::Intrinsic::ID)llvm::Intrinsic::ctlz ||
+          bi->getIntrinsicID() == (llvm::Intrinsic::ID)llvm::Intrinsic::cttz) &&
+         "Invalid Intrinsic - expected Ctlz/Cllz");
   OperandValueArrayRef args = bi->getArguments();
 
   // Fold for integer constant arguments.
@@ -994,15 +995,20 @@ public:
 
 IEEESemantics getFPSemantics(BuiltinFloatType *fpType) {
   switch (fpType->getFPKind()) {
+  case BuiltinFloatType::IEEE16:
+    return IEEESemantics(16, 5, 10, false);
   case BuiltinFloatType::IEEE32:
     return IEEESemantics(32, 8, 23, false);
   case BuiltinFloatType::IEEE64:
     return IEEESemantics(64, 11, 52, false);
   case BuiltinFloatType::IEEE80:
     return IEEESemantics(80, 15, 63, true);
-  default:
-    llvm_unreachable("Unexpected semantics");
+  case BuiltinFloatType::IEEE128:
+    return IEEESemantics(128, 15, 112, false);
+  case BuiltinFloatType::PPC128:
+    llvm_unreachable("ppc128 is not supported");
   }
+  llvm_unreachable("invalid floating point kind");
 }
 
 /// This function, given the exponent and significand of a binary fraction
@@ -1389,7 +1395,7 @@ static bool constantFoldInstruction(Operand *Op, Optional<bool> &ResultsInError,
   // Constant fold extraction of a constant element.
   if (auto *TEI = dyn_cast<TupleExtractInst>(User)) {
     if (auto *TheTuple = dyn_cast<TupleInst>(TEI->getOperand())) {
-      Results.push_back(TheTuple->getElement(TEI->getFieldNo()));
+      Results.push_back(TheTuple->getElement(TEI->getFieldIndex()));
       return true;
     }
   }
@@ -1418,7 +1424,7 @@ static bool constantFoldInstruction(Operand *Op, Optional<bool> &ResultsInError,
 
             // First check if we are not compatible with guaranteed. This means
             // we would be Owned or Unowned. If so, return SILValue().
-            if (!ownershipKind.isCompatibleWith(ValueOwnershipKind::Guaranteed))
+            if (!ownershipKind.isCompatibleWith(OwnershipKind::Guaranteed))
               return SILValue();
 
             // Otherwise check if our operand is non-trivial and None. In cases
@@ -1426,7 +1432,7 @@ static bool constantFoldInstruction(Operand *Op, Optional<bool> &ResultsInError,
             // where we lost that our underlying value is None due to
             // intermediate aggregate literal operations. In that case, we /do
             // not/ want to eliminate the destructure.
-            if (ownershipKind == ValueOwnershipKind::None &&
+            if (ownershipKind == OwnershipKind::None &&
                 !operandValue->getType().isTrivial(*Struct->getFunction()))
               return SILValue();
 
@@ -1452,7 +1458,7 @@ static bool constantFoldInstruction(Operand *Op, Optional<bool> &ResultsInError,
 
             // First check if we are not compatible with guaranteed. This means
             // we would be Owned or Unowned. If so, return SILValue().
-            if (!ownershipKind.isCompatibleWith(ValueOwnershipKind::Guaranteed))
+            if (!ownershipKind.isCompatibleWith(OwnershipKind::Guaranteed))
               return SILValue();
 
             // Otherwise check if our operand is non-trivial and None. In cases
@@ -1460,7 +1466,7 @@ static bool constantFoldInstruction(Operand *Op, Optional<bool> &ResultsInError,
             // where we lost that our underlying value is None due to
             // intermediate aggregate literal operations. In that case, we /do
             // not/ want to eliminate the destructure.
-            if (ownershipKind == ValueOwnershipKind::None &&
+            if (ownershipKind == OwnershipKind::None &&
                 !operandValue->getType().isTrivial(*Tuple->getFunction()))
               return SILValue();
 
@@ -1501,46 +1507,6 @@ static bool isApplyOfStringConcat(SILInstruction &I) {
 static bool isFoldable(SILInstruction *I) {
   return isa<IntegerLiteralInst>(I) || isa<FloatLiteralInst>(I) ||
          isa<StringLiteralInst>(I);
-}
-
-bool ConstantFolder::constantFoldStringConcatenation(ApplyInst *AI) {
-  SILBuilder B(AI);
-  // Try to apply the string literal concatenation optimization.
-  auto *Concatenated = tryToConcatenateStrings(AI, B);
-  // Bail if string literal concatenation could not be performed.
-  if (!Concatenated)
-    return false;
-
-  // Replace all uses of the old instruction by a new instruction.
-  AI->replaceAllUsesWith(Concatenated);
-
-  auto RemoveCallback = [&](SILInstruction *DeadI) { WorkList.remove(DeadI); };
-  // Remove operands that are not used anymore.
-  // Even if they are apply_inst, it is safe to
-  // do so, because they can only be applies
-  // of functions annotated as string.utf16
-  // or string.utf16.
-  for (auto &Op : AI->getAllOperands()) {
-    SILValue Val = Op.get();
-    Op.drop();
-    if (Val->use_empty()) {
-      auto *DeadI = Val->getDefiningInstruction();
-      assert(DeadI);
-      recursivelyDeleteTriviallyDeadInstructions(DeadI, /*force*/ true,
-                                                 RemoveCallback);
-    }
-  }
-  // Schedule users of the new instruction for constant folding.
-  // We only need to schedule the string.concat invocations.
-  for (auto AIUse : Concatenated->getUses()) {
-    if (isApplyOfStringConcat(*AIUse->getUser())) {
-      WorkList.insert(AIUse->getUser());
-    }
-  }
-  // Delete the old apply instruction.
-  recursivelyDeleteTriviallyDeadInstructions(AI, /*force*/ true,
-                                             RemoveCallback);
-  return true;
 }
 
 /// Given a buitin instruction calling globalStringTablePointer, check whether
@@ -1696,7 +1662,6 @@ ConstantFolder::processWorkList() {
   // This is used to avoid duplicate error reporting in case we reach the same
   // instruction from different entry points in the WorkList.
   llvm::DenseSet<SILInstruction *> ErrorSet;
-  llvm::SetVector<SILInstruction *> FoldedUsers;
   CastOptimizer CastOpt(FuncBuilder, nullptr /*SILBuilderContext*/,
                         /* replaceValueUsesAction */
                         [&](SILValue oldValue, SILValue newValue) {
@@ -1751,7 +1716,7 @@ ConstantFolder::processWorkList() {
           // Schedule users for constant folding.
           WorkList.insert(AssertConfInt);
           // Delete the call.
-          recursivelyDeleteTriviallyDeadInstructions(BI);
+          eliminateDeadInstruction(BI);
 
           InvalidateInstructions = true;
           continue;
@@ -1766,16 +1731,6 @@ ConstantFolder::processWorkList() {
           continue;
         }
       }
-
-    if (auto *AI = dyn_cast<ApplyInst>(I)) {
-      // Apply may only come from a string.concat invocation.
-      if (constantFoldStringConcatenation(AI)) {
-        // Invalidate all analysis that's related to the call graph.
-        InvalidateInstructions = true;
-      }
-
-      continue;
-    }
 
     // If we have a cast instruction, try to optimize it.
     if (isa<CheckedCastBranchInst>(I) || isa<CheckedCastAddrBranchInst>(I) ||
@@ -1819,9 +1774,8 @@ ConstantFolder::processWorkList() {
       if (constantFoldGlobalStringTablePointerBuiltin(cast<BuiltinInst>(I),
                                                       EnableDiagnostics)) {
         // Here, the bulitin instruction got folded, so clean it up.
-        recursivelyDeleteTriviallyDeadInstructions(
-            I, /*force*/ true,
-            [&](SILInstruction *DeadI) { WorkList.remove(DeadI); });
+        eliminateDeadInstruction(
+            I, [&](SILInstruction *DeadI) { WorkList.remove(DeadI); });
         InvalidateInstructions = true;
       }
       continue;
@@ -1873,7 +1827,7 @@ ConstantFolder::processWorkList() {
     }
 
     // Go through all users of the constant and try to fold them.
-    FoldedUsers.clear();
+    InstructionDeleter deleter;
     for (auto Result : I->getResults()) {
       for (auto *Use : Result->getUses()) {
         SILInstruction *User = Use->getUser();
@@ -1897,7 +1851,7 @@ ConstantFolder::processWorkList() {
         // this as part of the constant folding logic, because there is no value
         // they can produce (other than empty tuple, which is wasteful).
         if (isa<CondFailInst>(User))
-          FoldedUsers.insert(User);
+          deleter.trackIfDead(User);
 
         // See if we have an instruction that is read none and has a stateless
         // inverse. If we do, add it to the worklist so we can check its users
@@ -1963,10 +1917,7 @@ ConstantFolder::processWorkList() {
           if (C->getDefiningInstruction() == User)
             continue;
 
-          // Ok, we have succeeded. Add user to the FoldedUsers list and perform
-          // the necessary cleanups, RAUWs, etc.
-          FoldedUsers.insert(User);
-          InvalidateInstructions = true;
+          // Ok, we have succeeded.
           ++NumInstFolded;
 
           // We were able to fold, so all users should use the new folded
@@ -2005,11 +1956,16 @@ ConstantFolder::processWorkList() {
           // In contrast, if we realize that RAUWing %3 does nothing and skip
           // it, we exit the worklist as expected.
           SILValue r = User->getResult(Index);
-          if (r->use_empty())
+          if (r->use_empty()) {
+            deleter.trackIfDead(User);
             continue;
+          }
 
           // Otherwise, do the RAUW.
           User->getResult(Index)->replaceAllUsesWith(C);
+          // Record the user if it is dead to perform the necessary cleanups
+          // later.
+          deleter.trackIfDead(User);
 
           // The new constant could be further folded now, add it to the
           // worklist.
@@ -2018,18 +1974,12 @@ ConstantFolder::processWorkList() {
         }
       }
     }
-
     // Eagerly DCE. We do this after visiting all users to ensure we don't
     // invalidate the uses iterator.
-    ArrayRef<SILInstruction *> UserArray = FoldedUsers.getArrayRef();
-    if (!UserArray.empty()) {
+    deleter.cleanUpDeadInstructions([&](SILInstruction *DeadI) {
+      WorkList.remove(DeadI);
       InvalidateInstructions = true;
-    }
-
-    recursivelyDeleteTriviallyDeadInstructions(UserArray, false,
-                                               [&](SILInstruction *DeadI) {
-                                                 WorkList.remove(DeadI);
-                                               });
+    });
   }
 
   // TODO: refactor this code outside of the method. Passes should not merge

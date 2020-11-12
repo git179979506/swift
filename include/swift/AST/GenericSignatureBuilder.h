@@ -22,6 +22,7 @@
 
 #include "swift/AST/Decl.h"
 #include "swift/AST/DiagnosticEngine.h"
+#include "swift/AST/GenericParamList.h"
 #include "swift/AST/GenericSignature.h"
 #include "swift/AST/Identifier.h"
 #include "swift/AST/ProtocolConformanceRef.h"
@@ -30,7 +31,6 @@
 #include "swift/AST/TypeRepr.h"
 #include "swift/Basic/Debug.h"
 #include "swift/Basic/LLVM.h"
-#include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/FoldingSet.h"
 #include "llvm/ADT/ilist.h"
 #include "llvm/ADT/PointerUnion.h"
@@ -95,7 +95,7 @@ public:
       llvm::PointerUnion<Type, PotentialArchetype *, LayoutConstraint>;
 
   using RequirementRHS =
-    llvm::PointerUnion<Type, PotentialArchetype *, LayoutConstraint>;
+    llvm::PointerUnion<Type, LayoutConstraint>;
 
   /// The location of a requirement as written somewhere in the source.
   typedef llvm::PointerUnion<const TypeRepr *, const RequirementRepr *>
@@ -519,11 +519,7 @@ public:
 
     ProtocolConformanceRef operator()(CanType dependentType,
                                       Type conformingReplacementType,
-                                      ProtocolDecl *conformedProtocol) const {
-      return builder->lookupConformance(dependentType,
-                                        conformingReplacementType,
-                                        conformedProtocol);
-    }
+                                      ProtocolDecl *conformedProtocol) const;
   };
 
   /// Retrieve a function that can perform conformance lookup for this
@@ -748,12 +744,6 @@ private:
                             TypeArrayView<GenericTypeParamType> genericParams,
                             EquivalenceClass *equivClass);
 
-  /// Realize a potential archetype for the given type.
-  ///
-  /// The resolved archetype will be written back into the unresolved type,
-  /// to make the next resolution more efficient.
-  PotentialArchetype *realizePotentialArchetype(UnresolvedType &type);
-
 public:
   /// Try to resolve the equivalence class of the given type.
   ///
@@ -762,7 +752,7 @@ public:
   /// \param resolutionKind How to perform the resolution.
   ///
   /// \param wantExactPotentialArchetype Whether to return the precise
-  /// potential archetype described by the type (vs. just the equivalance
+  /// potential archetype described by the type (vs. just the equivalence
   /// class and resolved type).
   ResolvedType maybeResolveEquivalenceClass(
                                       Type type,
@@ -1546,17 +1536,10 @@ class GenericSignatureBuilder::PotentialArchetype {
   llvm::MapVector<Identifier, StoredNestedType> NestedTypes;
 
   /// Construct a new potential archetype for a concrete declaration.
-  PotentialArchetype(PotentialArchetype *parent, AssociatedTypeDecl *assocType)
-      : parentOrContext(parent), identifier(assocType) {
-    assert(parent != nullptr && "Not a nested type?");
-    assert(assocType->getOverriddenDecls().empty());
-  }
+  PotentialArchetype(PotentialArchetype *parent, AssociatedTypeDecl *assocType);
 
   /// Construct a new potential archetype for a generic parameter.
-  PotentialArchetype(ASTContext &ctx, GenericParamKey genericParam)
-    : parentOrContext(&ctx), identifier(genericParam)
-  {
-  }
+  PotentialArchetype(ASTContext &ctx, GenericParamKey genericParam);
 
 public:
   /// Retrieve the representative for this archetype, performing
@@ -1686,6 +1669,21 @@ public:
 
   friend class GenericSignatureBuilder;
 };
+
+template <typename C>
+bool GenericSignatureBuilder::Constraint<C>::isSubjectEqualTo(Type T) const {
+  return getSubjectDependentType({ })->isEqual(T);
+}
+
+template <typename T>
+bool GenericSignatureBuilder::Constraint<T>::isSubjectEqualTo(const GenericSignatureBuilder::PotentialArchetype *PA) const {
+  return getSubjectDependentType({ })->isEqual(PA->getDependentType({ }));
+}
+
+template <typename T>
+bool GenericSignatureBuilder::Constraint<T>::hasSameSubjectAs(const GenericSignatureBuilder::Constraint<T> &C) const {
+  return getSubjectDependentType({ })->isEqual(C.getSubjectDependentType({ }));
+}
 
 /// Describes a requirement whose processing has been delayed for some reason.
 class GenericSignatureBuilder::DelayedRequirement {

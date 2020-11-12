@@ -947,7 +947,7 @@ enum OperandRelation {
 /// the only possible incoming value.
 ///
 /// bb1:
-///  %3 = unchecked_enum_data %0 : $Optional<X>, #Optional.Some!enumelt.1
+///  %3 = unchecked_enum_data %0 : $Optional<X>, #Optional.Some!enumelt
 ///  checked_cast_br [exact] %3 : $X to $X, bb4, bb5 // id: %4
 ///
 /// bb4(%10 : $X):                                    // Preds: bb1
@@ -1044,7 +1044,7 @@ SILInstruction *findIdenticalInBlock(SILBasicBlock *BB, SILInstruction *Iden,
     if (InstToSink == BB->begin())
       return nullptr;
 
-    SkipBudget--;
+    --SkipBudget;
     InstToSink = std::prev(InstToSink);
     LLVM_DEBUG(llvm::dbgs() << "Continuing scan. Next inst: " << *InstToSink);
   }
@@ -1245,7 +1245,7 @@ static bool sinkArgument(EnumCaseDataflowContext &Context, SILBasicBlock *BB, un
     BB->getArgument(ArgNum)->replaceAllUsesWith(FSI);
 
     const auto &ArgType = FSI->getOperand(*DifferentOperandIndex)->getType();
-    BB->replacePhiArgument(ArgNum, ArgType, ValueOwnershipKind::Owned);
+    BB->replacePhiArgument(ArgNum, ArgType, OwnershipKind::Owned);
 
     // Update all branch instructions in the predecessors to pass the new
     // argument to this BB.
@@ -1261,7 +1261,7 @@ static bool sinkArgument(EnumCaseDataflowContext &Context, SILBasicBlock *BB, un
       TI->setOperand(ArgNum, CloneInst->getOperand(*DifferentOperandIndex));
       // Now delete the clone as we only needed it operand.
       if (CloneInst != FSI)
-        recursivelyDeleteTriviallyDeadInstructions(CloneInst);
+        eliminateDeadInstruction(CloneInst);
       ++CloneIt;
     }
     assert(CloneIt == Clones.end() && "Clone/pred mismatch");
@@ -1384,7 +1384,7 @@ static bool sinkCodeFromPredecessors(EnumCaseDataflowContext &Context,
   for (auto P : BB->getPredecessorBlocks()) {
     if (auto *BI = dyn_cast<BranchInst>(P->getTerminator())) {
       auto Args = BI->getArgs();
-      for (size_t idx = 0, size = Args.size(); idx < size; idx++) {
+      for (size_t idx = 0, size = Args.size(); idx < size; ++idx) {
         valueToArgIdxMap[{Args[idx], P}] = idx;
       }
     }
@@ -1431,7 +1431,7 @@ static bool sinkCodeFromPredecessors(EnumCaseDataflowContext &Context,
           // Replace operand values (which are passed to the successor block)
           // with corresponding block arguments.
           for (size_t idx = 0, numOps = InstToSink->getNumOperands();
-               idx < numOps; idx++) {
+               idx < numOps; ++idx) {
             ValueInBlock OpInFirstPred(InstToSink->getOperand(idx), FirstPred);
             assert(valueToArgIdxMap.count(OpInFirstPred) != 0);
             int argIdx = valueToArgIdxMap[OpInFirstPred];
@@ -1445,7 +1445,7 @@ static bool sinkCodeFromPredecessors(EnumCaseDataflowContext &Context,
             Context.blotValue(Result);
           }
           I->eraseFromParent();
-          NumSunk++;
+          ++NumSunk;
         }
 
         // Restart the scan.
@@ -1468,7 +1468,7 @@ static bool sinkCodeFromPredecessors(EnumCaseDataflowContext &Context,
       return Changed;
     }
 
-    SkipBudget--;
+    --SkipBudget;
     InstToSink = std::prev(InstToSink);
     LLVM_DEBUG(llvm::dbgs() << "Continuing scan. Next inst: " << *InstToSink);
   }
@@ -1530,7 +1530,7 @@ static bool tryToSinkRefCountAcrossSwitch(SwitchEnumInst *Switch,
   }
 
   RV->eraseFromParent();
-  NumSunk++;
+  ++NumSunk;
   return true;
 }
 
@@ -1616,7 +1616,7 @@ static bool tryToSinkRefCountAcrossSelectEnum(CondBranchInst *CondBr,
   }
 
   I->eraseFromParent();
-  NumSunk++;
+  ++NumSunk;
   return true;
 }
 

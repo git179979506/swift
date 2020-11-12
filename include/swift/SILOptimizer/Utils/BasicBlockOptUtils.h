@@ -33,6 +33,24 @@ class BasicBlockCloner;
 class SILLoop;
 class SILLoopInfo;
 
+/// Compute the set of reachable blocks.
+class ReachableBlocks {
+  SmallPtrSet<SILBasicBlock *, 32> visited;
+
+public:
+  /// Invoke \p visitor for each reachable block in \p f in worklist order (at
+  /// least one predecessor has been visited--defs are always visited before
+  /// uses except for phi-type block args). The \p visitor takes a block
+  /// argument, which is already marked visited, and must return true to
+  /// continue visiting blocks.
+  ///
+  /// Returns true if all reachable blocks were visited.
+  bool visit(SILFunction *f, function_ref<bool(SILBasicBlock *)> visitor);
+
+  /// Return true if \p bb has been visited.
+  bool isVisited(SILBasicBlock *bb) const { return visited.count(bb); }
+};
+
 /// Remove all instructions in the body of \p bb in safe manner by using
 /// undef.
 void clearBlockBody(SILBasicBlock *bb);
@@ -118,9 +136,9 @@ public:
 /// block's branch to jump to the newly cloned block, call cloneBranchTarget
 /// instead.
 ///
-/// After cloning, call splitCriticalEdges, then updateSSAAfterCloning. This is
-/// decoupled from cloning becaused some clients perform CFG edges updates after
-/// cloning but before splitting CFG edges.
+/// After cloning, call updateSSAAfterCloning. This is decoupled from cloning
+/// becaused some clients perform CFG edges updates after cloning but before
+/// splitting CFG edges.
 class BasicBlockCloner : public SILCloner<BasicBlockCloner> {
   using SuperTy = SILCloner<BasicBlockCloner>;
   friend class SILCloner<BasicBlockCloner>;
@@ -207,12 +225,7 @@ public:
 
   bool wasCloned() { return isBlockCloned(origBB); }
 
-  /// Call this after processing all instructions to fix the control flow
-  /// graph. The branch cloner may have left critical edges.
-  bool splitCriticalEdges(DominanceInfo *domInfo, SILLoopInfo *loopInfo);
-
-  /// Helper function to perform SSA updates after calling both
-  /// cloneBranchTarget and splitCriticalEdges.
+  /// Helper function to perform SSA updates after calling cloneBranchTarget.
   void updateSSAAfterCloning();
 
 protected:
@@ -289,9 +302,17 @@ class StaticInitCloner : public SILCloner<StaticInitCloner> {
   /// don't have any operands).
   llvm::SmallVector<SILInstruction *, 8> readyToClone;
 
+  SILInstruction *insertionPoint = nullptr;
+
 public:
   StaticInitCloner(SILGlobalVariable *gVar)
       : SILCloner<StaticInitCloner>(gVar) {}
+
+  StaticInitCloner(SILInstruction *insertionPoint)
+      : SILCloner<StaticInitCloner>(*insertionPoint->getFunction()),
+        insertionPoint(insertionPoint) {
+    Builder.setInsertionPoint(insertionPoint);
+  }
 
   /// Add \p InitVal and all its operands (transitively) for cloning.
   ///
@@ -314,7 +335,15 @@ public:
 
 protected:
   SILLocation remapLocation(SILLocation loc) {
+    if (insertionPoint)
+      return insertionPoint->getLoc();
     return ArtificialUnreachableLocation();
+  }
+
+  const SILDebugScope *remapScope(const SILDebugScope *DS) {
+    if (insertionPoint)
+      return insertionPoint->getDebugScope();
+    return nullptr;
   }
 };
 

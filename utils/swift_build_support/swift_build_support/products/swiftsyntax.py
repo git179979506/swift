@@ -12,10 +12,20 @@
 
 import os
 
+from build_swift.build_swift.constants import MULTIROOT_DATA_FILE_PATH
+
+from . import cmark
+from . import foundation
+from . import libcxx
+from . import libdispatch
+from . import libicu
+from . import llbuild
+from . import llvm
 from . import product
-from .. import multiroot_data_file
+from . import swift
+from . import swiftpm
+from . import xctest
 from .. import shell
-from .. import targets
 
 
 class SwiftSyntax(product.Product):
@@ -44,8 +54,8 @@ class SwiftSyntax(product.Product):
         build_cmd = [
             script_path,
             '--build-dir', self.build_dir,
-            '--multiroot-data-file', multiroot_data_file.path(),
-            '--toolchain', self.install_toolchain_path(),
+            '--multiroot-data-file', MULTIROOT_DATA_FILE_PATH,
+            '--toolchain', self.install_toolchain_path(target),
             '--filecheck-exec', os.path.join(llvm_build_dir, 'bin',
                                              'FileCheck'),
         ]
@@ -80,26 +90,27 @@ class SwiftSyntax(product.Product):
         return self.args.install_swiftsyntax
 
     def install(self, target_name):
-        target = \
-            targets.StdlibDeploymentTarget.get_target_for_name(target_name)
         install_prefix = self.args.install_destdir + self.args.install_prefix
 
-        dylib_dir = os.path.join(install_prefix, 'lib', 'swift',
-                                 target.platform.name)
-        module_dir = os.path.join(dylib_dir, 'SwiftSyntax.swiftmodule')
+        dylib_dir = os.path.join(install_prefix, 'lib')
 
         additional_params = [
             '--dylib-dir', dylib_dir,
             '--install'
         ]
 
-        if not self.args.skip_install_swiftsyntax_module:
-            if not os.path.exists(module_dir):
-                os.makedirs(module_dir)
-            module_base_name = os.path.join(module_dir, target.arch)
-            additional_params.extend([
-                '--swiftmodule-base-name', module_base_name
-            ])
-
         self.run_swiftsyntax_build_script(target=target_name,
                                           additional_params=additional_params)
+
+    @classmethod
+    def get_dependencies(cls):
+        return [cmark.CMark,
+                llvm.LLVM,
+                libcxx.LibCXX,
+                libicu.LibICU,
+                swift.Swift,
+                libdispatch.LibDispatch,
+                foundation.Foundation,
+                xctest.XCTest,
+                llbuild.LLBuild,
+                swiftpm.SwiftPM]

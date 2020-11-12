@@ -1412,7 +1412,7 @@ func processArrayOfFunctions(f1: [((Bool, Bool)) -> ()],
   }
 
   f2.forEach { (block: ((Bool, Bool)) -> ()) in
-  // expected-error@-1 {{cannot convert value of type '(((Bool, Bool)) -> ()) -> ()' to expected argument type '(@escaping (Bool, Bool) -> ()) throws -> Void'}}
+  // expected-error@-1 {{cannot convert value of type '(((Bool, Bool)) -> ()) -> Void' to expected argument type '(@escaping (Bool, Bool) -> ()) throws -> Void'}}
     block(p)
     block((c, c))
     block(c, c)
@@ -1471,8 +1471,8 @@ let sr4738 = (1, (2, 3))
 [sr4738].map { (x, (y, z)) -> Int in x + y + z }
 // expected-error@-1 {{closure tuple parameter does not support destructuring}} {{20-26=arg1}} {{38-38=let (y, z) = arg1; }}
 // expected-warning@-2 {{unnamed parameters must be written with the empty name '_'}} {{20-20=_: }}
-// expected-error@-3 {{use of undeclared type 'y'}}
-// expected-error@-4 {{use of undeclared type 'z'}}
+// expected-error@-3 {{cannot find type 'y' in scope}}
+// expected-error@-4 {{cannot find type 'z' in scope}}
 
 // rdar://problem/31892961
 let r31892961_1 = [1: 1, 2: 2]
@@ -1482,8 +1482,8 @@ let r31892961_2 = [1, 2, 3]
 let _: [Int] = r31892961_2.enumerated().map { ((index, val)) in
   // expected-error@-1 {{closure tuple parameter does not support destructuring}} {{48-60=arg0}} {{3-3=\n  let (index, val) = arg0\n  }}
   // expected-warning@-2 {{unnamed parameters must be written with the empty name '_'}} {{48-48=_: }}
-  // expected-error@-3 {{use of undeclared type 'index'}}
-  // expected-error@-4 {{use of undeclared type 'val'}}
+  // expected-error@-3 {{cannot find type 'index' in scope}}
+  // expected-error@-4 {{cannot find type 'val' in scope}}
   val + 1
 }
 
@@ -1499,13 +1499,13 @@ let r31892961_5 = (x: 1, (y: 2, (w: 3, z: 4)))
 [r31892961_5].map { (x: Int, (y: Int, (w: Int, z: Int))) in x + y } // expected-note {{'x' declared here}}
 // expected-error@-1 {{closure tuple parameter does not support destructuring}} {{30-56=arg1}} {{61-61=let (y, (w, z)) = arg1; }}
 // expected-warning@-2 {{unnamed parameters must be written with the empty name '_'}} {{30-30=_: }}
-// expected-error@-3{{use of unresolved identifier 'y'; did you mean 'x'?}}
+// expected-error@-3{{cannot find 'y' in scope; did you mean 'x'?}}
 
 let r31892961_6 = (x: 1, (y: 2, z: 4))
 [r31892961_6].map { (x: Int, (y: Int, z: Int)) in x + y } // expected-note {{'x' declared here}}
 // expected-error@-1 {{closure tuple parameter does not support destructuring}} {{30-46=arg1}} {{51-51=let (y, z) = arg1; }}
 // expected-warning@-2 {{unnamed parameters must be written with the empty name '_'}} {{30-30=_: }}
-// expected-error@-3{{use of unresolved identifier 'y'; did you mean 'x'?}}
+// expected-error@-3{{cannot find 'y' in scope; did you mean 'x'?}}
 
 // rdar://problem/32214649 -- these regressed in Swift 4 mode
 // with SE-0110 because of a problem in associated type inference
@@ -1526,7 +1526,7 @@ func r32214649_3<X>(_ a: [X]) -> [X] {
 
 func rdar32301091_1(_ :((Int, Int) -> ())!) {}
 rdar32301091_1 { _ in }
-// expected-error@-1 {{cannot convert value of type '(_) -> ()' to expected argument type '((Int, Int) -> ())?'}}
+// expected-error@-1 {{contextual closure type '(Int, Int) -> ()' expects 2 arguments, but 1 was used in closure body}} {{19-19=,_ }}
 
 func rdar32301091_2(_ :(Int, Int) -> ()) {}
 rdar32301091_2 { _ in }
@@ -1657,14 +1657,14 @@ public extension Optional {
 // https://bugs.swift.org/browse/SR-6837
 
 // FIXME: Can't overlaod local functions so these must be top-level
-func takePairOverload(_ pair: (Int, Int?)) {} // expected-note {{found this candidate}}
-func takePairOverload(_: () -> ()) {} // expected-note {{found this candidate}}
+func takePairOverload(_ pair: (Int, Int?)) {}
+func takePairOverload(_: () -> ()) {}
 
 do {
   func takeFn(fn: (_ i: Int, _ j: Int?) -> ()) {}
   func takePair(_ pair: (Int, Int?)) {}
   takeFn(fn: takePair) // expected-error {{cannot convert value of type '((Int, Int?)) -> ()' to expected argument type '(Int, Int?) -> ()'}}
-  takeFn(fn: takePairOverload) // expected-error {{ambiguous reference to member 'takePairOverload'}}
+  takeFn(fn: takePairOverload) // expected-error {{cannot convert value of type '((Int, Int?)) -> ()' to expected argument type '(Int, Int?) -> ()'}}
   takeFn(fn: { (pair: (Int, Int?)) in } ) // Disallow for -swift-version 4 and later
   // expected-error@-1 {{contextual closure type '(Int, Int?) -> ()' expects 2 arguments, but 1 was used in closure body}}
   takeFn { (pair: (Int, Int?)) in } // Disallow for -swift-version 4 and later
@@ -1679,7 +1679,7 @@ do {
   f(a: log() as ((()) -> Void)?) // expected-error {{cannot convert value of type '((()) -> Void)?' to expected argument type '(() -> Void)?'}}
 
   func logNoOptional<T>() -> (T) -> Void { }
-  f(a: logNoOptional() as ((()) -> Void)) // expected-error {{cannot convert value of type '(()) -> Void' to expected argument type '(() -> Void)?'}}
+  f(a: logNoOptional() as ((()) -> Void)) // expected-error {{cannot convert value of type '(()) -> Void' to expected argument type '() -> Void'}}
 
   func g() {}
   g(()) // expected-error {{argument passed to call that takes no arguments}}
@@ -1695,13 +1695,15 @@ class Mappable<T> {
 }
 
 let x = Mappable(())
-_ = x.map { (_: Void) in return () }
-_ = x.map { (_: ()) in () }
+// expected-note@-1 2{{'x' declared here}}
+x.map { (_: Void) in return () }
+x.map { (_: ()) in () }
 
 // https://bugs.swift.org/browse/SR-9470
 do {
   func f(_: Int...) {}
-  let _ = [(1, 2, 3)].map(f) // expected-error {{cannot invoke 'map' with an argument list of type '(@escaping (Int...) -> ())'}}
+  let _ = [(1, 2, 3)].map(f) // expected-error {{no exact matches in call to instance method 'map'}}
+  // expected-note@-1 {{found candidate with type '(((Int, Int, Int)) throws -> _) throws -> Array<_>'}}
 }
 
 // rdar://problem/48443263 - cannot convert value of type '() -> Void' to expected argument type '(_) -> Void'
@@ -1735,7 +1737,8 @@ func autoclosureSplat() {
   // wrap the closure in a function conversion.
 
   takeFn { (fn: @autoclosure () -> Int, x: Int) in }
-  // expected-error@-1 {{contextual closure type '(@escaping () -> Int) -> ()' expects 1 argument, but 2 were used in closure body}}
+  // expected-error@-1 {{contextual closure type '(() -> Int) -> ()' expects 1 argument, but 2 were used in closure body}}
+  // expected-error@-2 {{converting non-escaping value to 'T' may allow it to escape}}
 
   takeFn { (fn: @autoclosure @escaping () -> Int) in }
   // FIXME: It looks like matchFunctionTypes() does not check @autoclosure at all.

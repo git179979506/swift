@@ -18,10 +18,12 @@
 #include "swift/AST/NameLookup.h"
 #include "swift/AST/PropertyWrappers.h"
 #include "swift/AST/ProtocolConformance.h"
+#include "swift/AST/SourceFile.h"
 #include "swift/AST/TypeCheckRequests.h"
 #include "swift/AST/TypeLoc.h"
 #include "swift/AST/TypeRepr.h"
 #include "swift/AST/Types.h"
+#include "swift/Subsystems.h"
 
 using namespace swift;
 
@@ -35,14 +37,14 @@ namespace swift {
 }
 
 void swift::simple_display(
-       llvm::raw_ostream &out,
-       const llvm::PointerUnion<TypeDecl *, ExtensionDecl *> &value) {
-  if (auto type = value.dyn_cast<TypeDecl *>()) {
+    llvm::raw_ostream &out,
+    const llvm::PointerUnion<const TypeDecl *, const ExtensionDecl *> &value) {
+  if (auto type = value.dyn_cast<const TypeDecl *>()) {
     type->dumpRef(out);
     return;
   }
 
-  auto ext = value.get<ExtensionDecl *>();
+  auto ext = value.get<const ExtensionDecl *>();
   simple_display(out, ext);
 }
 
@@ -114,7 +116,7 @@ void InheritedTypeRequest::cacheResult(Type value) const {
   const auto &storage = getStorage();
   auto &typeLoc = getInheritedTypeLocAtIndex(std::get<0>(storage),
                                              std::get<1>(storage));
-  typeLoc.setType(value);
+  const_cast<TypeLoc &>(typeLoc).setType(value);
 }
 
 //----------------------------------------------------------------------------//
@@ -155,6 +157,19 @@ void SuperclassTypeRequest::cacheResult(Type value) const {
     protocolDecl->LazySemanticInfo.SuperclassType.setPointerAndInt(value, true);
 }
 
+void SuperclassTypeRequest::writeDependencySink(
+    evaluator::DependencyCollector &tracker, Type value) const {
+  if (!value)
+    return;
+
+  // FIXME: This is compatible with the existing name tracking scheme, but
+  // ignoring this name when we fail to look up a class is bogus.
+  ClassDecl *Super = value->getClassOrBoundGenericClass();
+  if (!Super)
+    return;
+  tracker.addPotentialMember(Super);
+}
+
 //----------------------------------------------------------------------------//
 // Enum raw type computation.
 //----------------------------------------------------------------------------//
@@ -164,21 +179,10 @@ void EnumRawTypeRequest::diagnoseCycle(DiagnosticEngine &diags) const {
   diags.diagnose(enumDecl, diag::circular_enum_inheritance, enumDecl->getName());
 }
 
-bool EnumRawTypeRequest::isCached() const {
-  return std::get<1>(getStorage()) == TypeResolutionStage::Interface;
-}
-
-Optional<Type> EnumRawTypeRequest::getCachedResult() const {
-  auto enumDecl = std::get<0>(getStorage());
-  if (enumDecl->LazySemanticInfo.hasRawType())
-    return enumDecl->LazySemanticInfo.RawTypeAndFlags.getPointer();
-
-  return None;
-}
-
-void EnumRawTypeRequest::cacheResult(Type value) const {
-  auto enumDecl = std::get<0>(getStorage());
-  enumDecl->LazySemanticInfo.cacheRawType(value);
+void EnumRawTypeRequest::noteCycleStep(DiagnosticEngine &diags) const {
+  auto *decl = std::get<0>(getStorage());
+  diags.diagnose(decl, diag::kind_declname_declared_here,
+                 decl->getDescriptiveKind(), decl->getName());
 }
 
 //----------------------------------------------------------------------------//
@@ -361,7 +365,7 @@ SourceLoc WhereClauseOwner::getLoc() const {
 
 void swift::simple_display(llvm::raw_ostream &out,
                            const WhereClauseOwner &owner) {
-  if (auto where = owner.source.dyn_cast<TrailingWhereClause *>()) {
+  if (owner.source.is<TrailingWhereClause *>()) {
     simple_display(out, owner.dc->getAsDecl());
   } else if (owner.source.is<SpecializeAttr *>()) {
     out << "@_specialize";
@@ -388,6 +392,9 @@ MutableArrayRef<RequirementRepr> WhereClauseOwner::getRequirements() const {
     return genericParams->getRequirements();
   } else if (const auto attr = source.dyn_cast<SpecializeAttr *>()) {
     if (auto whereClause = attr->getTrailingWhereClause())
+      return whereClause->getRequirements();
+  } else if (const auto attr = source.dyn_cast<DifferentiableAttr *>()) {
+    if (auto whereClause = attr->getWhereClause())
       return whereClause->getRequirements();
   } else if (const auto whereClause = source.get<TrailingWhereClause *>()) {
     return whereClause->getRequirements();
@@ -430,60 +437,6 @@ RequirementRepr &RequirementRequest::getRequirement() const {
 
 bool RequirementRequest::isCached() const {
   return std::get<2>(getStorage()) == TypeResolutionStage::Interface;
-}
-
-Optional<Requirement> RequirementRequest::getCachedResult() const {
-  auto &reqRepr = getRequirement();
-  switch (reqRepr.getKind()) {
-  case RequirementReprKind::TypeConstraint:
-    if (!reqRepr.getSubjectLoc().wasValidated() ||
-        !reqRepr.getConstraintLoc().wasValidated())
-      return None;
-
-    return Requirement(reqRepr.getConstraint()->getClassOrBoundGenericClass()
-                         ? RequirementKind::Superclass
-                         : RequirementKind::Conformance,
-                       reqRepr.getSubject(),
-                       reqRepr.getConstraint());
-
-  case RequirementReprKind::SameType:
-    if (!reqRepr.getFirstTypeLoc().wasValidated() ||
-        !reqRepr.getSecondTypeLoc().wasValidated())
-      return None;
-
-    return Requirement(RequirementKind::SameType, reqRepr.getFirstType(),
-                       reqRepr.getSecondType());
-
-  case RequirementReprKind::LayoutConstraint:
-    if (!reqRepr.getSubjectLoc().wasValidated())
-      return None;
-
-    return Requirement(RequirementKind::Layout, reqRepr.getSubject(),
-                       reqRepr.getLayoutConstraint());
-  }
-  llvm_unreachable("unhandled kind");
-}
-
-void RequirementRequest::cacheResult(Requirement value) const {
-  auto &reqRepr = getRequirement();
-  switch (value.getKind()) {
-  case RequirementKind::Conformance:
-  case RequirementKind::Superclass:
-    reqRepr.getSubjectLoc().setType(value.getFirstType());
-    reqRepr.getConstraintLoc().setType(value.getSecondType());
-    break;
-
-  case RequirementKind::SameType:
-    reqRepr.getFirstTypeLoc().setType(value.getFirstType());
-    reqRepr.getSecondTypeLoc().setType(value.getSecondType());
-    break;
-
-  case RequirementKind::Layout:
-    reqRepr.getSubjectLoc().setType(value.getFirstType());
-    reqRepr.getLayoutConstraintLoc()
-      .setLayoutConstraint(value.getLayoutConstraint());
-    break;
-  }
 }
 
 //----------------------------------------------------------------------------//
@@ -545,6 +498,11 @@ bool PropertyWrapperMutabilityRequest::isCached() const {
   return !var->getAttrs().isEmpty();
 }
 
+bool PropertyWrapperLValuenessRequest::isCached() const {
+  auto var = std::get<0>(getStorage());
+  return !var->getAttrs().isEmpty();
+}
+
 void swift::simple_display(
     llvm::raw_ostream &out, const PropertyWrapperTypeInfo &propertyWrapper) {
   out << "{ ";
@@ -587,16 +545,58 @@ void swift::simple_display(llvm::raw_ostream &os, PropertyWrapperMutability m) {
   os << "getter " << names[m.Getter] << ", setter " << names[m.Setter];
 }
 
+void swift::simple_display(llvm::raw_ostream &out, PropertyWrapperLValueness l) {
+  out << "is lvalue for get: {";
+  simple_display(out, l.isLValueForGetAccess);
+  out << "}, is lvalue for set: {";
+  simple_display(out, l.isLValueForSetAccess);
+  out << "}";
+}
+
 void swift::simple_display(llvm::raw_ostream &out,
-                           const ResilienceExpansion &value) {
-  out << value;
+                           ResilienceExpansion value) {
+  switch (value) {
+  case ResilienceExpansion::Minimal:
+    out << "minimal";
+    break;
+  case ResilienceExpansion::Maximal:
+    out << "maximal";
+    break;
+  }
+}
+
+void swift::simple_display(llvm::raw_ostream &out,
+                           FragileFunctionKind value) {
+  switch (value.kind) {
+  case FragileFunctionKind::Transparent:
+    out << "transparent";
+    break;
+  case FragileFunctionKind::Inlinable:
+    out << "inlinable";
+    break;
+  case FragileFunctionKind::AlwaysEmitIntoClient:
+    out << "alwaysEmitIntoClient";
+    break;
+  case FragileFunctionKind::DefaultArgument:
+    out << "defaultArgument";
+    break;
+  case FragileFunctionKind::PropertyInitializer:
+    out << "propertyInitializer";
+    break;
+  case FragileFunctionKind::None:
+    out << "none";
+    break;
+  }
+
+  out << ", allowUsableFromInline: "
+      << (value.allowUsableFromInline ? "true" : "false");
 }
 
 //----------------------------------------------------------------------------//
-// FunctionBuilder-related requests.
+// ResultBuilder-related requests.
 //----------------------------------------------------------------------------//
 
-bool AttachedFunctionBuilderRequest::isCached() const {
+bool AttachedResultBuilderRequest::isCached() const {
   // Only needs to be cached if there are any custom attributes.
   auto var = std::get<0>(getStorage());
   return var->getAttrs().hasAttribute<CustomAttr>();
@@ -764,23 +764,6 @@ void SynthesizeAccessorRequest::cacheResult(AccessorDecl *accessor) const {
 }
 
 //----------------------------------------------------------------------------//
-// EmittedMembersRequest computation.
-//----------------------------------------------------------------------------//
-
-Optional<DeclRange>
-EmittedMembersRequest::getCachedResult() const {
-  auto *classDecl = std::get<0>(getStorage());
-  if (classDecl->hasForcedEmittedMembers())
-    return classDecl->getMembers();
-  return None;
-}
-
-void EmittedMembersRequest::cacheResult(DeclRange result) const {
-  auto *classDecl = std::get<0>(getStorage());
-  classDecl->setHasForcedEmittedMembers();
-}
-
-//----------------------------------------------------------------------------//
 // IsImplicitlyUnwrappedOptionalRequest computation.
 //----------------------------------------------------------------------------//
 
@@ -858,19 +841,17 @@ bool EnumRawValuesRequest::isCached() const {
   return std::get<1>(getStorage()) == TypeResolutionStage::Interface;
 }
 
-Optional<bool> EnumRawValuesRequest::getCachedResult() const {
+Optional<evaluator::SideEffect> EnumRawValuesRequest::getCachedResult() const {
   auto *ED = std::get<0>(getStorage());
-  if (ED->LazySemanticInfo.hasCheckedRawValues())
-    return true;
+  if (ED->SemanticFlags.contains(EnumDecl::HasFixedRawValuesAndTypes))
+    return std::make_tuple<>();
   return None;
 }
 
-void EnumRawValuesRequest::cacheResult(bool) const {
+void EnumRawValuesRequest::cacheResult(evaluator::SideEffect) const {
   auto *ED = std::get<0>(getStorage());
-  auto flags = ED->LazySemanticInfo.RawTypeAndFlags.getInt() |
-      EnumDecl::HasFixedRawValues |
-      EnumDecl::HasFixedRawValuesAndTypes;
-  ED->LazySemanticInfo.RawTypeAndFlags.setInt(flags);
+  ED->SemanticFlags |= OptionSet<EnumDecl::SemanticInfoFlags>{
+      EnumDecl::HasFixedRawValues | EnumDecl::HasFixedRawValuesAndTypes};
 }
 
 void EnumRawValuesRequest::diagnoseCycle(DiagnosticEngine &diags) const {
@@ -880,7 +861,7 @@ void EnumRawValuesRequest::diagnoseCycle(DiagnosticEngine &diags) const {
 }
 
 void EnumRawValuesRequest::noteCycleStep(DiagnosticEngine &diags) const {
-
+  
 }
 
 //----------------------------------------------------------------------------//
@@ -932,23 +913,28 @@ void ParamSpecifierRequest::cacheResult(ParamSpecifier specifier) const {
 // ResultTypeRequest computation.
 //----------------------------------------------------------------------------//
 
-TypeLoc &ResultTypeRequest::getResultTypeLoc() const {
-  auto *decl = std::get<0>(getStorage());
-  if (auto *funcDecl = dyn_cast<FuncDecl>(decl))
-    return funcDecl->getBodyResultTypeLoc();
-  auto *subscriptDecl = cast<SubscriptDecl>(decl);
-  return subscriptDecl->getElementTypeLoc();
-}
-
 Optional<Type> ResultTypeRequest::getCachedResult() const {
-  if (auto type = getResultTypeLoc().getType())
-    return type;
+  Type type;
+  auto *const decl = std::get<0>(getStorage());
+  if (const auto *const funcDecl = dyn_cast<FuncDecl>(decl)) {
+    type = funcDecl->FnRetType.getType();
+  } else {
+    type = cast<SubscriptDecl>(decl)->ElementTy.getType();
+  }
 
-  return None;
+  if (type.isNull())
+    return None;
+
+  return type;
 }
 
 void ResultTypeRequest::cacheResult(Type type) const {
-  getResultTypeLoc().setType(type);
+  auto *const decl = std::get<0>(getStorage());
+  if (auto *const funcDecl = dyn_cast<FuncDecl>(decl)) {
+    funcDecl->FnRetType.setType(type);
+  } else {
+    cast<SubscriptDecl>(decl)->ElementTy.setType(type);
+  }
 }
 
 //----------------------------------------------------------------------------//
@@ -1005,6 +991,7 @@ void InterfaceTypeRequest::cacheResult(Type type) const {
   auto *decl = std::get<0>(getStorage());
   if (type) {
     assert(!type->hasTypeVariable() && "Type variable in interface type");
+    assert(!type->hasHole() && "Type hole in interface type");
     assert(!type->is<InOutType>() && "Interface type must be materializable");
     assert(!type->hasArchetype() && "Archetype in interface type");
   }
@@ -1012,15 +999,16 @@ void InterfaceTypeRequest::cacheResult(Type type) const {
 }
 
 //----------------------------------------------------------------------------//
-// LookupPrecedenceGroupRequest computation.
+// ValidatePrecedenceGroupRequest computation.
 //----------------------------------------------------------------------------//
 
-SourceLoc LookupPrecedenceGroupRequest::getNearestLoc() const {
+SourceLoc ValidatePrecedenceGroupRequest::getNearestLoc() const {
   auto &desc = std::get<0>(getStorage());
   return desc.getLoc();
 }
 
-void LookupPrecedenceGroupRequest::diagnoseCycle(DiagnosticEngine &diags) const {
+void ValidatePrecedenceGroupRequest::diagnoseCycle(
+    DiagnosticEngine &diags) const {
   auto &desc = std::get<0>(getStorage());
   if (auto pathDir = desc.pathDirection) {
     diags.diagnose(desc.nameLoc, diag::precedence_group_cycle, (bool)*pathDir);
@@ -1029,7 +1017,8 @@ void LookupPrecedenceGroupRequest::diagnoseCycle(DiagnosticEngine &diags) const 
   }
 }
 
-void LookupPrecedenceGroupRequest::noteCycleStep(DiagnosticEngine &diag) const {
+void ValidatePrecedenceGroupRequest::noteCycleStep(
+    DiagnosticEngine &diag) const {
   auto &desc = std::get<0>(getStorage());
   diag.diagnose(desc.nameLoc,
                  diag::circular_reference_through_precedence_group, desc.ident);
@@ -1116,39 +1105,22 @@ void ValueWitnessRequest::cacheResult(Witness type) const {
 }
 
 //----------------------------------------------------------------------------//
-// PreCheckFunctionBuilderRequest computation.
+// PreCheckResultBuilderRequest computation.
 //----------------------------------------------------------------------------//
 
 void swift::simple_display(llvm::raw_ostream &out,
-                           FunctionBuilderClosurePreCheck value) {
+                           ResultBuilderBodyPreCheck value) {
   switch (value) {
-  case FunctionBuilderClosurePreCheck::Okay:
+  case ResultBuilderBodyPreCheck::Okay:
     out << "okay";
     break;
-  case FunctionBuilderClosurePreCheck::HasReturnStmt:
+  case ResultBuilderBodyPreCheck::HasReturnStmt:
     out << "has return statement";
     break;
-  case FunctionBuilderClosurePreCheck::Error:
+  case ResultBuilderBodyPreCheck::Error:
     out << "error";
     break;
   }
-}
-
-//----------------------------------------------------------------------------//
-// HasCircularInheritanceRequest computation.
-//----------------------------------------------------------------------------//
-
-void HasCircularInheritanceRequest::diagnoseCycle(
-    DiagnosticEngine &diags) const {
-  auto *decl = std::get<0>(getStorage());
-  diags.diagnose(decl, diag::circular_class_inheritance, decl->getName());
-}
-
-void HasCircularInheritanceRequest::noteCycleStep(
-    DiagnosticEngine &diags) const {
-  auto *decl = std::get<0>(getStorage());
-  diags.diagnose(decl, diag::kind_declname_declared_here,
-                 decl->getDescriptiveKind(), decl->getName());
 }
 
 //----------------------------------------------------------------------------//
@@ -1237,4 +1209,363 @@ Optional<Expr *> CallerSideDefaultArgExprRequest::getCachedResult() const {
 void CallerSideDefaultArgExprRequest::cacheResult(Expr *expr) const {
   auto *defaultExpr = std::get<0>(getStorage());
   defaultExpr->ContextOrCallerSideExpr = expr;
+}
+
+//----------------------------------------------------------------------------//
+// DifferentiableAttributeTypeCheckRequest computation.
+//----------------------------------------------------------------------------//
+
+Optional<IndexSubset *>
+DifferentiableAttributeTypeCheckRequest::getCachedResult() const {
+  auto *attr = std::get<0>(getStorage());
+  if (attr->hasBeenTypeChecked())
+    return attr->ParameterIndicesAndBit.getPointer();
+  return None;
+}
+
+void DifferentiableAttributeTypeCheckRequest::cacheResult(
+    IndexSubset *parameterIndices) const {
+  auto *attr = std::get<0>(getStorage());
+  attr->ParameterIndicesAndBit.setPointerAndInt(parameterIndices, true);
+}
+
+//----------------------------------------------------------------------------//
+// CheckRedeclarationRequest computation.
+//----------------------------------------------------------------------------//
+
+Optional<evaluator::SideEffect>
+CheckRedeclarationRequest::getCachedResult() const {
+  if (!std::get<0>(getStorage())->alreadyCheckedRedeclaration())
+    return None;
+  return std::make_tuple<>();
+}
+
+void CheckRedeclarationRequest::cacheResult(evaluator::SideEffect) const {
+  std::get<0>(getStorage())->setCheckedRedeclaration();
+}
+
+evaluator::DependencySource CheckRedeclarationRequest::readDependencySource(
+    const evaluator::DependencyRecorder &eval) const {
+  auto *currentDC = std::get<0>(getStorage())->getDeclContext();
+  return currentDC->getParentSourceFile();
+}
+
+void CheckRedeclarationRequest::writeDependencySink(
+    evaluator::DependencyCollector &tracker, evaluator::SideEffect) const {
+  auto *current = std::get<0>(getStorage());
+  if (!current->hasName())
+    return;
+
+  DeclContext *currentDC = current->getDeclContext();
+  SourceFile *currentFile = currentDC->getParentSourceFile();
+  if (!currentFile || currentDC->isLocalContext())
+    return;
+
+  if (currentDC->isTypeContext()) {
+    if (auto nominal = currentDC->getSelfNominalTypeDecl()) {
+      tracker.addUsedMember(nominal, current->getBaseName());
+    }
+  } else {
+    tracker.addTopLevelName(current->getBaseName());
+  }
+}
+
+//----------------------------------------------------------------------------//
+// LookupAllConformancesInContextRequest computation.
+//----------------------------------------------------------------------------//
+
+void LookupAllConformancesInContextRequest::writeDependencySink(
+    evaluator::DependencyCollector &tracker,
+    ProtocolConformanceLookupResult conformances) const {
+  for (auto conformance : conformances) {
+    tracker.addPotentialMember(conformance->getProtocol());
+  }
+}
+
+//----------------------------------------------------------------------------//
+// ResolveTypeEraserTypeRequest computation.
+//----------------------------------------------------------------------------//
+
+Optional<Type> ResolveTypeEraserTypeRequest::getCachedResult() const {
+  auto *TyExpr = std::get<1>(getStorage())->TypeEraserExpr;
+  if (!TyExpr || !TyExpr->getType()) {
+    return None;
+  }
+  return TyExpr->getInstanceType();
+}
+
+void ResolveTypeEraserTypeRequest::cacheResult(Type value) const {
+  assert(value && "Resolved type erasure type to null type!");
+  auto *attr = std::get<1>(getStorage());
+  if (attr->TypeEraserExpr) {
+    attr->TypeEraserExpr->setType(MetatypeType::get(value));
+  } else {
+    attr->TypeEraserExpr = TypeExpr::createImplicit(value,
+                                                    value->getASTContext());
+  }
+}
+
+//----------------------------------------------------------------------------//
+// TypeCheckSourceFileRequest computation.
+//----------------------------------------------------------------------------//
+
+evaluator::DependencySource TypeCheckSourceFileRequest::readDependencySource(
+    const evaluator::DependencyRecorder &e) const {
+  return std::get<0>(getStorage());
+}
+
+Optional<evaluator::SideEffect>
+TypeCheckSourceFileRequest::getCachedResult() const {
+  auto *SF = std::get<0>(getStorage());
+  if (SF->ASTStage == SourceFile::TypeChecked)
+    return std::make_tuple<>();
+
+  return None;
+}
+
+void TypeCheckSourceFileRequest::cacheResult(evaluator::SideEffect) const {
+  auto *SF = std::get<0>(getStorage());
+
+  // Verify that we've checked types correctly.
+  SF->ASTStage = SourceFile::TypeChecked;
+
+  {
+    auto &Ctx = SF->getASTContext();
+    FrontendStatsTracer tracer(Ctx.Stats, "AST verification");
+    // Verify the SourceFile.
+    swift::verify(*SF);
+  }
+}
+
+//----------------------------------------------------------------------------//
+// TypeCheckFunctionBodyRequest computation.
+//----------------------------------------------------------------------------//
+
+Optional<BraceStmt *> TypeCheckFunctionBodyRequest::getCachedResult() const {
+  using BodyKind = AbstractFunctionDecl::BodyKind;
+  auto *afd = std::get<0>(getStorage());
+  switch (afd->getBodyKind()) {
+  case BodyKind::Deserialized:
+  case BodyKind::MemberwiseInitializer:
+  case BodyKind::None:
+  case BodyKind::Skipped:
+    // These cases don't have any body available.
+    return nullptr;
+
+  case BodyKind::TypeChecked:
+    return afd->Body;
+
+  case BodyKind::Synthesize:
+  case BodyKind::Parsed:
+  case BodyKind::Unparsed:
+    return None;
+  }
+  llvm_unreachable("Unhandled BodyKind in switch");
+}
+
+void TypeCheckFunctionBodyRequest::cacheResult(BraceStmt *body) const {
+  auto *afd = std::get<0>(getStorage());
+  afd->setBody(body, AbstractFunctionDecl::BodyKind::TypeChecked);
+}
+
+evaluator::DependencySource
+TypeCheckFunctionBodyRequest::readDependencySource(
+    const evaluator::DependencyRecorder &e) const {
+  return std::get<0>(getStorage())->getParentSourceFile();
+}
+
+//----------------------------------------------------------------------------//
+// ModuleImplicitImportsRequest computation.
+//----------------------------------------------------------------------------//
+
+void swift::simple_display(llvm::raw_ostream &out,
+                           const ImportedModule &module) {
+  out << "import of ";
+  if (!module.accessPath.empty()) {
+    module.accessPath.print(out);
+    out << " in ";
+  }
+  simple_display(out, module.importedModule);
+}
+
+void swift::simple_display(llvm::raw_ostream &out,
+                           const UnloadedImportedModule &module) {
+  out << "import of ";
+  if (!module.getAccessPath().empty()) {
+    module.getAccessPath().print(out);
+    out << " in ";
+  }
+  out << "unloaded ";
+  module.getModulePath().print(out);
+}
+
+void swift::simple_display(llvm::raw_ostream &out,
+                           const AttributedImport<std::tuple<>> &import) {
+  out << " [";
+
+  if (import.options.contains(ImportFlags::Exported))
+    out << " exported";
+  if (import.options.contains(ImportFlags::Testable))
+    out << " testable";
+  if (import.options.contains(ImportFlags::ImplementationOnly))
+    out << " implementation-only";
+  if (import.options.contains(ImportFlags::PrivateImport))
+    out << " private(" << import.sourceFileArg << ")";
+
+  if (import.options.contains(ImportFlags::SPIAccessControl)) {
+    out << " spi(";
+    llvm::interleaveComma(import.spiGroups, out, [&out](Identifier name) {
+                                                   simple_display(out, name);
+                                                 });
+    out << ")";
+  }
+
+  out << " ]";
+}
+
+void swift::simple_display(llvm::raw_ostream &out,
+                           const ImplicitImportList &importList) {
+  llvm::interleaveComma(importList.imports, out,
+                        [&](const auto &import) {
+                          simple_display(out, import);
+                        });
+  if (!importList.imports.empty() && !importList.unloadedImports.empty())
+    out << ", ";
+  llvm::interleaveComma(importList.unloadedImports, out,
+                        [&](const auto &import) {
+                          simple_display(out, import);
+                        });
+}
+
+//----------------------------------------------------------------------------//
+// ResolveTypeRequest computation.
+//----------------------------------------------------------------------------//
+
+void ResolveTypeRequest::noteCycleStep(DiagnosticEngine &diags) const {
+  auto *repr = std::get<1>(getStorage());
+  diags.diagnose(repr->getLoc(), diag::circular_type_resolution_note, repr);
+}
+
+void swift::simple_display(llvm::raw_ostream &out,
+                           const TypeResolution *resolution) {
+  out << "while resolving type ";
+}
+
+SourceLoc swift::extractNearestSourceLoc(const TypeRepr *repr) {
+  if (!repr)
+    return SourceLoc();
+  return repr->getLoc();
+}
+
+//----------------------------------------------------------------------------//
+// CustomAttrTypeRequest computation.
+//----------------------------------------------------------------------------//
+
+void swift::simple_display(llvm::raw_ostream &out, CustomAttrTypeKind value) {
+  switch (value) {
+  case CustomAttrTypeKind::NonGeneric:
+    out << "non-generic";
+    return;
+
+  case CustomAttrTypeKind::PropertyWrapper:
+    out << "property-wrapper";
+    return;
+
+  case CustomAttrTypeKind::GlobalActor:
+    out << "global-actor";
+    return;
+  }
+  llvm_unreachable("bad kind");
+}
+
+Optional<Type> CustomAttrTypeRequest::getCachedResult() const {
+  auto *attr = std::get<0>(getStorage());
+  if (auto ty = attr->getType()) {
+    return ty;
+  }
+  return None;
+}
+
+void CustomAttrTypeRequest::cacheResult(Type value) const {
+  auto *attr = std::get<0>(getStorage());
+  attr->setType(value);
+}
+
+bool ActorIsolation::requiresSubstitution() const {
+  switch (kind) {
+  case ActorInstance:
+  case Independent:
+  case IndependentUnsafe:
+  case Unspecified:
+    return false;
+
+  case GlobalActor:
+    return getGlobalActor()->hasTypeParameter();
+  }
+  llvm_unreachable("unhandled actor isolation kind!");
+}
+
+ActorIsolation ActorIsolation::subst(SubstitutionMap subs) const {
+  switch (kind) {
+  case ActorInstance:
+  case Independent:
+  case IndependentUnsafe:
+  case Unspecified:
+    return *this;
+
+  case GlobalActor:
+    return forGlobalActor(getGlobalActor().subst(subs));
+  }
+  llvm_unreachable("unhandled actor isolation kind!");
+}
+
+void swift::simple_display(
+    llvm::raw_ostream &out, const ActorIsolation &state) {
+  switch (state) {
+    case ActorIsolation::ActorInstance:
+      out << "actor-isolated to instance of " << state.getActor()->getName();
+      break;
+
+    case ActorIsolation::Independent:
+      out << "actor-independent";
+      break;
+
+    case ActorIsolation::IndependentUnsafe:
+      out << "actor-independent (unsafe)";
+      break;
+
+    case ActorIsolation::Unspecified:
+      out << "unspecified actor isolation";
+      break;
+
+    case ActorIsolation::GlobalActor:
+      out << "actor-isolated to global actor "
+          << state.getGlobalActor().getString();
+      break;
+  }
+}
+
+bool swift::areTypesEqual(Type type1, Type type2) {
+  if (!type1 || !type2)
+    return !type1 && !type2;
+
+  return type1->isEqual(type2);
+}
+
+void swift::simple_display(
+    llvm::raw_ostream &out, BodyInitKind initKind) {
+  switch (initKind) {
+  case BodyInitKind::None: out << "none"; return;
+  case BodyInitKind::Delegating: out << "delegating"; return;
+  case BodyInitKind::Chained: out << "chained"; return;
+  case BodyInitKind::ImplicitChained: out << "implicit_chained"; return;
+  }
+  llvm_unreachable("Bad body init kind");
+}
+
+void swift::simple_display(
+    llvm::raw_ostream &out, BodyInitKindAndExpr initKindAndExpr) {
+  simple_display(out, initKindAndExpr.initKind);
+  out << " ";
+  simple_display(out, initKindAndExpr.initExpr);
 }

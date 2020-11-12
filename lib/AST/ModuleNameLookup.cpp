@@ -15,6 +15,7 @@
 #include "swift/AST/ClangModuleLoader.h"
 #include "swift/AST/ImportCache.h"
 #include "swift/AST/NameLookup.h"
+#include "swift/AST/NameLookupRequests.h"
 #include "llvm/Support/raw_ostream.h"
 
 using namespace swift;
@@ -51,8 +52,9 @@ public:
   /// The results are appended to \p decls.
   void lookupInModule(SmallVectorImpl<ValueDecl *> &decls,
                       const DeclContext *moduleOrFile,
-                      ModuleDecl::AccessPathTy accessPath,
-                      const DeclContext *moduleScopeContext);
+                      ImportPath::Access accessPath,
+                      const DeclContext *moduleScopeContext,
+                      NLOptions options);
 };
 
 
@@ -78,11 +80,11 @@ private:
     return true;
   }
 
-  void doLocalLookup(ModuleDecl *module, ModuleDecl::AccessPathTy path,
+  void doLocalLookup(ModuleDecl *module, ImportPath::Access path,
                      SmallVectorImpl<ValueDecl *> &localDecls) {
     // If this import is specific to some named decl ("import Swift.Int")
     // then filter out any lookups that don't match.
-    if (!ModuleDecl::matchesAccessPath(path, name))
+    if (!path.matches(name))
       return;
     module->lookupValue(name, lookupKind, localDecls);
   }
@@ -109,7 +111,7 @@ private:
     return false;
   }
 
-  void doLocalLookup(ModuleDecl *module, ModuleDecl::AccessPathTy path,
+  void doLocalLookup(ModuleDecl *module, ImportPath::Access path,
                      SmallVectorImpl<ValueDecl *> &localDecls) {
     VectorDeclConsumer consumer(localDecls);
     module->lookupVisibleDecls(path, consumer, lookupKind);
@@ -122,12 +124,28 @@ template <typename LookupStrategy>
 void ModuleNameLookup<LookupStrategy>::lookupInModule(
     SmallVectorImpl<ValueDecl *> &decls,
     const DeclContext *moduleOrFile,
-    ModuleDecl::AccessPathTy accessPath,
-    const DeclContext *moduleScopeContext) {
+    ImportPath::Access accessPath,
+    const DeclContext *moduleScopeContext,
+    NLOptions options) {
   assert(moduleOrFile->isModuleScopeContext());
+
+  // Does the module scope have any separately-imported overlays shadowing
+  // the module we're looking into?
+  SmallVector<ModuleDecl *, 4> overlays;
+  moduleScopeContext->getSeparatelyImportedOverlays(
+      moduleOrFile->getParentModule(), overlays);
+  if (!overlays.empty()) {
+    // If so, look in each of those overlays.
+    for (auto overlay : overlays)
+      lookupInModule(decls, overlay, accessPath, moduleScopeContext, options);
+    // FIXME: This may not work gracefully if more than one of these lookups
+    // finds something.
+    return;
+  }
 
   const size_t initialCount = decls.size();
   size_t currentCount = decls.size();
+  bool includeUsableFromInline = options & NL_IncludeUsableFromInline;
 
   auto updateNewDecls = [&](const DeclContext *moduleScopeContext) {
     if (decls.size() == currentCount)
@@ -138,7 +156,9 @@ void ModuleNameLookup<LookupStrategy>::lookupInModule(
       [&](ValueDecl *VD) {
         if (resolutionKind == ResolutionKind::TypesOnly && !isa<TypeDecl>(VD))
           return true;
-        if (respectAccessControl && !VD->isAccessibleFrom(moduleScopeContext))
+        if (respectAccessControl &&
+            !VD->isAccessibleFrom(moduleScopeContext, false,
+                                  includeUsableFromInline))
           return true;
         return false;
       });
@@ -167,15 +187,16 @@ void ModuleNameLookup<LookupStrategy>::lookupInModule(
   if (!canReturnEarly) {
     auto &imports = ctx.getImportCache().getImportSet(moduleOrFile);
 
-    auto visitImport = [&](ModuleDecl::ImportedModule import,
+    auto visitImport = [&](ImportedModule import,
                            const DeclContext *moduleScopeContext) {
-      if (import.first.empty())
-        import.first = accessPath;
+      if (import.accessPath.empty())
+        import.accessPath = accessPath;
       else if (!accessPath.empty() &&
-               !ModuleDecl::isSameAccessPath(import.first, accessPath))
+               !import.accessPath.isSameAs(accessPath))
         return;
 
-      getDerived()->doLocalLookup(import.second, import.first, decls);
+      getDerived()->doLocalLookup(import.importedModule, import.accessPath,
+                                  decls);
       updateNewDecls(moduleScopeContext);
     };
 
@@ -186,8 +207,7 @@ void ModuleNameLookup<LookupStrategy>::lookupInModule(
       if (auto *loader = ctx.getClangModuleLoader()) {
         headerImportModule = loader->getImportedHeaderModule();
         if (headerImportModule) {
-          ModuleDecl::ImportedModule import({}, headerImportModule);
-          visitImport(import, nullptr);
+          visitImport(ImportedModule(headerImportModule), nullptr);
         }
       }
     }
@@ -195,11 +215,11 @@ void ModuleNameLookup<LookupStrategy>::lookupInModule(
     for (auto import : imports.getTopLevelImports()) {
       // A module appears in its own top-level import list; since we checked
       // it already, skip it.
-      if (import.second == module)
+      if (import.importedModule == module)
         continue;
 
       // Skip the special import set module; we've already visited it.
-      if (import.second == headerImportModule)
+      if (import.importedModule == headerImportModule)
         continue;
 
       visitImport(import, moduleScopeContext);
@@ -207,7 +227,7 @@ void ModuleNameLookup<LookupStrategy>::lookupInModule(
 
     for (auto import : imports.getTransitiveImports()) {
       // Skip the special import set module; we've already visited it.
-      if (import.second == headerImportModule)
+      if (import.importedModule == headerImportModule)
         continue;
 
       visitImport(import, nullptr);
@@ -228,28 +248,37 @@ void ModuleNameLookup<LookupStrategy>::lookupInModule(
               decls.end());
 }
 
+QualifiedLookupResult
+LookupInModuleRequest::evaluate(
+    Evaluator &evaluator, const DeclContext *moduleOrFile, DeclName name,
+    NLKind lookupKind, ResolutionKind resolutionKind,
+    const DeclContext *moduleScopeContext, NLOptions options) const {
+  assert(moduleScopeContext->isModuleScopeContext());
+
+  QualifiedLookupResult decls;
+  LookupByName lookup(moduleOrFile->getASTContext(), resolutionKind,
+                      name, lookupKind);
+  lookup.lookupInModule(decls, moduleOrFile, {}, moduleScopeContext, options);
+  return decls;
+}
+
 void namelookup::lookupInModule(const DeclContext *moduleOrFile,
                                 DeclName name,
                                 SmallVectorImpl<ValueDecl *> &decls,
                                 NLKind lookupKind,
                                 ResolutionKind resolutionKind,
-                                const DeclContext *moduleScopeContext) {
-  assert(moduleScopeContext->isModuleScopeContext());
-
+                                const DeclContext *moduleScopeContext,
+                                NLOptions options) {
   auto &ctx = moduleOrFile->getASTContext();
-  auto *stats = ctx.Stats;
-  if (stats)
-    stats->getFrontendCounters().NumLookupInModule++;
-
-  FrontendStatsTracer tracer(stats, "lookup-in-module");
-
-  LookupByName lookup(ctx, resolutionKind, name, lookupKind);
-  lookup.lookupInModule(decls, moduleOrFile, {}, moduleScopeContext);
+  LookupInModuleRequest req(moduleOrFile, name, lookupKind, resolutionKind,
+                            moduleScopeContext, options);
+  auto results = evaluateOrDefault(ctx.evaluator, req, {});
+  decls.append(results.begin(), results.end());
 }
 
 void namelookup::lookupVisibleDeclsInModule(
     const DeclContext *moduleOrFile,
-    ModuleDecl::AccessPathTy accessPath,
+    ImportPath::Access accessPath,
     SmallVectorImpl<ValueDecl *> &decls,
     NLKind lookupKind,
     ResolutionKind resolutionKind,
@@ -257,6 +286,18 @@ void namelookup::lookupVisibleDeclsInModule(
   assert(moduleScopeContext->isModuleScopeContext());
   auto &ctx = moduleOrFile->getASTContext();
   LookupVisibleDecls lookup(ctx, resolutionKind, lookupKind);
-  lookup.lookupInModule(decls, moduleOrFile, accessPath, moduleScopeContext);
+  lookup.lookupInModule(decls, moduleOrFile, accessPath, moduleScopeContext,
+                        NL_QualifiedDefault);
 }
 
+void namelookup::simple_display(llvm::raw_ostream &out, ResolutionKind kind) {
+  switch (kind) {
+  case ResolutionKind::Overloadable:
+    out << "Overloadable";
+    return;
+  case ResolutionKind::TypesOnly:
+    out << "TypesOnly";
+    return;
+  }
+  llvm_unreachable("Unhandled case in switch");
+}

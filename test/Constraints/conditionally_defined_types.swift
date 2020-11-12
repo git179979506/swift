@@ -36,12 +36,12 @@ let _ = SameType<X>.Decl3.self
 let _ = SameType<X>.Decl4<X>.self
 let _ = SameType<X>.Decl5<X>.self
 
-let _ = SameType<Y>.TypeAlias1.self // expected-error {{'SameType<Y>.TypeAlias1' (aka 'X') requires the types 'Y' and 'X' be equivalent}}
-let _ = SameType<Y>.TypeAlias2.self // expected-error {{'SameType<Y>.TypeAlias2' (aka 'Y') requires the types 'Y' and 'X' be equivalent}}
+let _ = SameType<Y>.TypeAlias1.self // expected-error {{'SameType<T>.TypeAlias1' requires the types 'Y' and 'X' be equivalent}}
+let _ = SameType<Y>.TypeAlias2.self // expected-error {{'SameType<T>.TypeAlias2' (aka 'Y') requires the types 'Y' and 'X' be equivalent}}
 let _ = SameType<Y>.TypeAlias3<X>.self // expected-error {{'SameType<Y>.TypeAlias3' requires the types 'Y' and 'X' be equivalent}}
-let _ = SameType<Y>.Decl1.self // expected-error {{'SameType<Y>.Decl1' requires the types 'Y' and 'X' be equivalent}}
-let _ = SameType<Y>.Decl2.self // expected-error {{'SameType<Y>.Decl2' requires the types 'Y' and 'X' be equivalent}}
-let _ = SameType<Y>.Decl3.self // expected-error {{'SameType<Y>.Decl3' requires the types 'Y' and 'X' be equivalent}}
+let _ = SameType<Y>.Decl1.self // expected-error {{'SameType<T>.Decl1' requires the types 'Y' and 'X' be equivalent}}
+let _ = SameType<Y>.Decl2.self // expected-error {{'SameType<T>.Decl2' requires the types 'Y' and 'X' be equivalent}}
+let _ = SameType<Y>.Decl3.self // expected-error {{'SameType<T>.Decl3' requires the types 'Y' and 'X' be equivalent}}
 let _ = SameType<Y>.Decl4<X>.self // expected-error {{'SameType<Y>.Decl4' requires the types 'Y' and 'X' be equivalent}}
 let _ = SameType<Y>.Decl5<X>.self // expected-error {{'SameType<Y>.Decl5' requires the types 'Y' and 'X' be equivalent}}
 
@@ -49,7 +49,7 @@ extension SameType: AssociatedType where T == X {}
 // expected-note@-1 {{requirement specified as 'T' == 'X' [with T = Y]}}
 
 let _ = SameType<X>.T.self
-let _ = SameType<Y>.T.self // expected-error {{'SameType<Y>.T' (aka 'X') requires the types 'Y' and 'X' be equivalent}}
+let _ = SameType<Y>.T.self // expected-error {{'SameType<T>.T' (aka 'X') requires the types 'Y' and 'X' be equivalent}}
 
 
 struct Conforms<T> {}
@@ -112,14 +112,14 @@ let _ = SameType<X>.Decl1.Decl3.self
 let _ = SameType<X>.Decl1.Decl4<X>.self
 let _ = SameType<X>.Decl1.Decl5<X>.self
 
-let _ = SameType<Y>.Decl1.TypeAlias1.self // expected-error {{'SameType<Y>.Decl1' requires the types 'Y' and 'X' be equivalent}}
-let _ = SameType<Y>.Decl1.TypeAlias2.self // expected-error {{'SameType<Y>.Decl1' requires the types 'Y' and 'X' be equivalent}}
-let _ = SameType<Y>.Decl1.TypeAlias3<X>.self // expected-error {{'SameType<Y>.Decl1' requires the types 'Y' and 'X' be equivalent}}
-let _ = SameType<Y>.Decl1.Decl1.self // expected-error {{'SameType<Y>.Decl1' requires the types 'Y' and 'X' be equivalent}}
-let _ = SameType<Y>.Decl1.Decl2.self // expected-error {{'SameType<Y>.Decl1' requires the types 'Y' and 'X' be equivalent}}
-let _ = SameType<Y>.Decl1.Decl3.self // expected-error {{'SameType<Y>.Decl1' requires the types 'Y' and 'X' be equivalent}}
-let _ = SameType<Y>.Decl1.Decl4<X>.self // expected-error {{'SameType<Y>.Decl1' requires the types 'Y' and 'X' be equivalent}}
-let _ = SameType<Y>.Decl1.Decl5<X>.self // expected-error {{'SameType<Y>.Decl1' requires the types 'Y' and 'X' be equivalent}}
+let _ = SameType<Y>.Decl1.TypeAlias1.self // expected-error {{'SameType<T>.Decl1' requires the types 'Y' and 'X' be equivalent}}
+let _ = SameType<Y>.Decl1.TypeAlias2.self // expected-error {{'SameType<T>.Decl1' requires the types 'Y' and 'X' be equivalent}}
+let _ = SameType<Y>.Decl1.TypeAlias3<X>.self // expected-error {{'SameType<T>.Decl1' requires the types 'Y' and 'X' be equivalent}}
+let _ = SameType<Y>.Decl1.Decl1.self // expected-error {{'SameType<T>.Decl1' requires the types 'Y' and 'X' be equivalent}}
+let _ = SameType<Y>.Decl1.Decl2.self // expected-error {{'SameType<T>.Decl1' requires the types 'Y' and 'X' be equivalent}}
+let _ = SameType<Y>.Decl1.Decl3.self // expected-error {{'SameType<T>.Decl1' requires the types 'Y' and 'X' be equivalent}}
+let _ = SameType<Y>.Decl1.Decl4<X>.self // expected-error {{'SameType<T>.Decl1' requires the types 'Y' and 'X' be equivalent}}
+let _ = SameType<Y>.Decl1.Decl5<X>.self // expected-error {{'SameType<T>.Decl1' requires the types 'Y' and 'X' be equivalent}}
 
 extension SameType.Decl4 where U == X { // expected-note 5 {{requirement specified as 'U' == 'X' [with U = Y]}}
     typealias TypeAlias1 = T
@@ -144,12 +144,12 @@ let _ = SameType<X>.Decl4<X>.Decl3.self
 let _ = SameType<X>.Decl4<X>.Decl4<X>.self
 let _ = SameType<X>.Decl4<X>.Decl5<X>.self
 
-let _ = SameType<X>.Decl4<Y>.TypeAlias1.self // expected-error {{'SameType<X>.Decl4<Y>.TypeAlias1' (aka 'X') requires the types 'Y' and 'X' be equivalent}}
-let _ = SameType<X>.Decl4<Y>.TypeAlias2.self // expected-error {{'SameType<X>.Decl4<Y>.TypeAlias2' (aka 'Y') requires the types 'Y' and 'X' be equivalent}}
+let _ = SameType<X>.Decl4<Y>.TypeAlias1.self // expected-error {{'SameType<T>.Decl4<U>.TypeAlias1' requires the types 'Y' and 'X' be equivalent}}
+let _ = SameType<X>.Decl4<Y>.TypeAlias2.self // expected-error {{'SameType<T>.Decl4<U>.TypeAlias2' (aka 'Y') requires the types 'Y' and 'X' be equivalent}}
 let _ = SameType<X>.Decl4<Y>.TypeAlias3<X>.self // expected-error {{'SameType<X>.Decl4<Y>.TypeAlias3' requires the types 'Y' and 'X' be equivalent}}
-let _ = SameType<X>.Decl4<Y>.Decl1.self // expected-error {{'SameType<X>.Decl4<Y>.Decl1' requires the types 'Y' and 'X' be equivalent}}
-let _ = SameType<X>.Decl4<Y>.Decl2.self // expected-error {{'SameType<X>.Decl4<Y>.Decl2' requires the types 'Y' and 'X' be equivalent}}
-let _ = SameType<X>.Decl4<Y>.Decl3.self // expected-error {{'SameType<X>.Decl4<Y>.Decl3' requires the types 'Y' and 'X' be equivalent}}
+let _ = SameType<X>.Decl4<Y>.Decl1.self // expected-error {{'SameType<T>.Decl4<U>.Decl1' requires the types 'Y' and 'X' be equivalent}}
+let _ = SameType<X>.Decl4<Y>.Decl2.self // expected-error {{'SameType<T>.Decl4<U>.Decl2' requires the types 'Y' and 'X' be equivalent}}
+let _ = SameType<X>.Decl4<Y>.Decl3.self // expected-error {{'SameType<T>.Decl4<U>.Decl3' requires the types 'Y' and 'X' be equivalent}}
 let _ = SameType<X>.Decl4<Y>.Decl4<X>.self // expected-error {{'SameType<X>.Decl4<Y>.Decl4' requires the types 'Y' and 'X' be equivalent}}
 let _ = SameType<X>.Decl4<Y>.Decl5<X>.self // expected-error {{'SameType<X>.Decl4<Y>.Decl5' requires the types 'Y' and 'X' be equivalent}}
 
@@ -222,3 +222,15 @@ let _ = Conforms<X>.Decl4<Z2>.Decl2.self // expected-error {{type 'Z2.T' (aka 'Y
 let _ = Conforms<X>.Decl4<Z2>.Decl3.self // expected-error {{type 'Z2.T' (aka 'Y') does not conform to protocol 'P'}}
 let _ = Conforms<X>.Decl4<Z2>.Decl4<X>.self // expected-error {{type 'Z2.T' (aka 'Y') does not conform to protocol 'P'}}
 let _ = Conforms<X>.Decl4<Z2>.Decl5<X>.self // expected-error {{type 'Z2.T' (aka 'Y') does not conform to protocol 'P'}}
+
+// rdar://problem/45271663
+protocol PP { associatedtype V }
+struct SS<PI : PP> {}
+enum EE<A, B> {}
+extension EE : PP where A : PP, B : PP { typealias V = EE<A.V, B.V> }
+
+protocol P2 { associatedtype U }
+func f<PI : PP & P2>(s: SS<PI>) -> SS<EE<PI.U, PI.U>> where PI.U : PP, PI.V : P2 {
+  let t: EE<PI.V.U, PI.V.U>.V
+  // expected-error@-1 {{type 'PI.V.U' does not conform to protocol 'PP'}}
+}

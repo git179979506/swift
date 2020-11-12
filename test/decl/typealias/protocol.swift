@@ -144,13 +144,13 @@ protocol P3 {
 
 // Test for not crashing on recursive aliases
 protocol Circular {
-  typealias Y = Self.Y // expected-error {{type alias 'Y' references itself}}
+  typealias Y = Self.Y // expected-error {{type alias 'Y' references itself}} expected-note {{while resolving type 'Self.Y'}}
 
-  typealias Y2 = Y2 // expected-error {{type alias 'Y2' references itself}}
+  typealias Y2 = Y2 // expected-error {{type alias 'Y2' references itself}} expected-note {{while resolving type 'Y2'}}
 
-  typealias Y3 = Y4 // expected-error {{type alias 'Y3' references itself}}
+  typealias Y3 = Y4 // expected-error {{type alias 'Y3' references itself}} expected-note {{while resolving type 'Y4'}}
 
-  typealias Y4 = Y3 // expected-note {{through reference here}}
+  typealias Y4 = Y3 // expected-note {{through reference here}} expected-note {{while resolving type 'Y3'}}
 }
 
 // Qualified and unqualified references to protocol typealiases from concrete type
@@ -276,7 +276,7 @@ extension P10 where A == X<U> { }
 
 extension P10 where A == X<Self.U> { }
 
-extension P10 where V == Int { } // expected-warning 2{{'V' is deprecated: just use Int, silly}}
+extension P10 where V == Int { } // expected-warning {{'V' is deprecated: just use Int, silly}}
 // expected-warning@-1{{neither type in same-type constraint ('Self.V' (aka 'Int') or 'Int') refers to a generic parameter or associated type}}
 
 // rdar://problem/36003312

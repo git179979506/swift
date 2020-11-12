@@ -116,7 +116,7 @@ static void writeQuotedEscaped(llvm::raw_ostream &os,
 
 void OutputFileMap::write(llvm::raw_ostream &os,
                           ArrayRef<StringRef> inputs) const {
-  for (const auto input : inputs) {
+  for (const auto &input : inputs) {
     writeQuotedEscaped(os, input);
     os << ":";
 
@@ -232,7 +232,7 @@ OutputFileMap::parse(std::unique_ptr<llvm::MemoryBuffer> Buffer,
 
       llvm::SmallString<128> PathStorage;
       OutputMap.insert(std::pair<file_types::ID, std::string>(
-          Kind, resolvePath(Path, PathStorage)));
+          Kind, resolvePath(Path, PathStorage).str()));
 
       // HACK: fake up an SwiftRanges & CompiledSource output filenames
       if (addEntriesForSourceRangeDependencies &&

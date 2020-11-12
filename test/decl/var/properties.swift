@@ -337,9 +337,9 @@ var extraTokensInAccessorBlock7: X { // expected-error{{non-member observing pro
 }
 
 var extraTokensInAccessorBlock8: X {
-  foo // expected-error {{use of unresolved identifier 'foo'}}
-  get {} // expected-error{{use of unresolved identifier 'get'}}
-  set {} // expected-error{{use of unresolved identifier 'set'}}
+  foo // expected-error {{cannot find 'foo' in scope}}
+  get {} // expected-error{{cannot find 'get' in scope}}
+  set {} // expected-error{{cannot find 'set' in scope}}
 }
 
 var extraTokensInAccessorBlock9: Int {
@@ -379,6 +379,12 @@ var x12: X {
 }
 
 var x13: X {} // expected-error {{computed property must have accessors specified}}
+
+struct X14 {}
+extension X14 {
+  var x14: X {
+  } // expected-error {{computed property must have accessors specified}}
+}
 
 // Type checking problems
 struct Y { }
@@ -489,7 +495,7 @@ extension ProtocolWithExtension2 {
   static let baz: ProtocolWithExtension2 = StructureImplementingProtocolWithExtension2(bar: "baz") // expected-error{{static stored properties not supported in protocol extensions}}
 }
 
-func getS() -> S {
+func getS() -> S { // expected-note 2{{did you mean 'getS'?}}
   let s: S
   return s
 }
@@ -547,7 +553,7 @@ struct Aleph {
   }
 }
 
-struct Beth {
+struct Beth { // expected-note 2{{did you mean 'Beth'?}}
   var c: Int
 }
 
@@ -884,7 +890,7 @@ protocol ProtocolWillSetDidSet4 {
   var a: Int { didSet willSet } // expected-error {{property in protocol must have explicit { get } or { get set } specifier}} {{14-32={ get <#set#> \}}} expected-error 2 {{expected get or set in a protocol property}}
 }
 protocol ProtocolWillSetDidSet5 {
-  let a: Int { didSet willSet }  // expected-error {{immutable property requirement must be declared as 'var' with a '{ get }' specifier}} {{3-6=var}} {{13-13= { get \}}} {{none}} expected-error 2 {{expected get or set in a protocol property}} expected-error {{'let' declarations cannot be computed properties}} {{3-6=var}}
+  let a: Int { didSet willSet }  // expected-error {{protocols cannot require properties to be immutable; declare read-only properties by using 'var' with a '{ get }' specifier}} {{3-6=var}} {{13-13= { get \}}} {{none}} expected-error 2 {{expected get or set in a protocol property}} expected-error {{'let' declarations cannot be computed properties}} {{3-6=var}}
 }
 
 var globalDidsetWillSet: Int {  // expected-error {{non-member observing properties require an initializer}}
@@ -930,7 +936,7 @@ class ObservingPropertiesNotMutableInWillSet {
   }
 
   func localCase() {
-    var localProperty: Int = 42 {
+    var localProperty: Int = 42 { // expected-warning {{variable 'localProperty' was written to, but never read}}
       willSet {
         localProperty = 19   // expected-warning {{attempting to store to property 'localProperty' within its own willSet}}
       }

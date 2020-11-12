@@ -1,4 +1,4 @@
-// RUN: %target-typecheck-verify-swift
+// RUN: %target-typecheck-verify-swift -disable-parser-lookup
 
 //===----------------------------------------------------------------------===//
 // Tests and samples.
@@ -36,7 +36,7 @@ func basictest() {
 
   var x4 : Bool = true
   var x5 : Bool =
-        4 // expected-error {{cannot convert value of type 'Int' to specified type 'Bool'}}
+        4 // expected-error {{type 'Int' cannot be used as a boolean; test for '!= 0' instead}}
 
   //var x6 : Float = 4+5
 
@@ -158,11 +158,11 @@ func errorRecovery() {
   // <rdar://problem/22426860> CrashTracer: [USER] swift at …mous_namespace::ConstraintGenerator::getTypeForPattern + 698
   var (g1, g2, g3) = (1, 2) // expected-error {{'(Int, Int)' is not convertible to '(Int, Int, _)', tuples have a different number of elements}}
   var (h1, h2) = (1, 2, 3) // expected-error {{'(Int, Int, Int)' is not convertible to '(Int, Int)', tuples have a different number of elements}}
-  var i: (Bool, Bool) = makeTuple() // expected-error {{tuple type '(String, Int)' is not convertible to tuple '(Bool, Bool)'}}
+  var i: (Bool, Bool) = makeTuple() // expected-error {{cannot convert value of type '(String, Int)' to specified type '(Bool, Bool)'}}
 }
 
 func acceptsInt(_ x: Int) {}
-acceptsInt(unknown_var) // expected-error {{use of unresolved identifier 'unknown_var'}}
+acceptsInt(unknown_var) // expected-error {{cannot find 'unknown_var' in scope}}
 
 
 
@@ -173,7 +173,7 @@ var test1d = { { { 42 } } }
 
 func test2(_ a: Int, b: Int) -> (c: Int) { // expected-error{{cannot create a single-element tuple with an element label}} {{34-37=}} expected-note {{did you mean 'a'?}} expected-note {{did you mean 'b'?}}
  _ = a+b
- a+b+c // expected-error{{use of unresolved identifier 'c'}}
+ a+b+c // expected-error{{cannot find 'c' in scope}}
  return a+b
 }
 
@@ -189,11 +189,11 @@ func test4() -> ((_ arg1: Int, _ arg2: Int) -> Int) {
 func test5() {
   let a: (Int, Int) = (1,2)
   var
-     _: ((Int) -> Int, Int) = a  // expected-error {{tuple type '(Int, Int)' is not convertible to tuple '((Int) -> Int, Int)'}}
+     _: ((Int) -> Int, Int) = a  // expected-error {{cannot convert value of type '(Int, Int)' to specified type '((Int) -> Int, Int)'}}
 
 
   let c: (a: Int, b: Int) = (1,2)
-  let _: (b: Int, a: Int) = c  // Ok, reshuffle tuple.
+  let _: (b: Int, a: Int) = c  // expected-warning {{expression shuffles the elements of this tuple; this behavior is deprecated}}
 }
 
 
@@ -246,15 +246,16 @@ func test_as_2() {
 func test_lambda() {
   // A simple closure.
   var a = { (value: Int) -> () in markUsed(value+1) }
+  // expected-warning@-1 {{initialization of variable 'a' was never used; consider replacing with assignment to '_' or removing it}}
 
   // A recursive lambda.
-  // FIXME: This should definitely be accepted.
   var fib = { (n: Int) -> Int in
+    // expected-warning@-1 {{variable 'fib' was never mutated; consider changing to 'let' constant}}
     if (n < 2) {
       return n
     }
     
-    return fib(n-1)+fib(n-2) // expected-error 2 {{variable used within its own initial value}}
+    return fib(n-1)+fib(n-2)
   }
 }
 
@@ -277,6 +278,7 @@ func test_floating_point() {
 func test_nonassoc(_ x: Int, y: Int) -> Bool {
   // FIXME: the second error and note here should arguably disappear
   return x == y == x // expected-error {{adjacent operators are in non-associative precedence group 'ComparisonPrecedence'}}  expected-error {{binary operator '==' cannot be applied to operands of type 'Bool' and 'Int'}}
+  // expected-note@-1 {{overloads for '==' exist with these partially matching parameter lists: (Bool, Bool), (Int, Int)}}
 }
 
 // More realistic examples.
@@ -295,7 +297,7 @@ func fib(_ n: Int) -> Int {
 
 // FIXME: Should warn about integer constants being too large <rdar://problem/14070127>
 var
-   il_a: Bool = 4  // expected-error {{cannot convert value of type 'Int' to specified type 'Bool'}}
+   il_a: Bool = 4  // expected-error {{type 'Int' cannot be used as a boolean; test for '!= 0' instead}}
 var il_b: Int8
    = 123123
 var il_c: Int8 = 4  // ok
@@ -525,7 +527,7 @@ func testSingleQuoteStringLiterals() {
 }
 
 // <rdar://problem/17128913>
-var s = ""
+var s = "" // expected-note {{did you mean 's'?}}
 s.append(contentsOf: ["x"])
 
 //===----------------------------------------------------------------------===//
@@ -606,7 +608,7 @@ var ruleVar: Rule
 ruleVar = Rule("a") // expected-error {{missing argument label 'target:' in call}}
 // expected-error@-1 {{missing argument for parameter 'dependencies' in call}}
 
-class C {
+class C { // expected-note {{did you mean 'C'?}}
   var x: C?
   init(other: C?) { x = other }
 
@@ -709,7 +711,6 @@ func unusedExpressionResults() {
   // Unused l-value
   _ // expected-error{{'_' can only appear in a pattern or on the left side of an assignment}}
 
-
   // <rdar://problem/20749592> Conditional Optional binding hides compiler error
   let optionalc:C? = nil
   optionalc?.method()  // ok
@@ -748,10 +749,13 @@ func invalidDictionaryLiteral() {
 }
 
 
-[4].joined(separator: [1]) // expected-error {{cannot convert value of type 'Int' to expected element type 'String'}}
-// expected-error@-1 {{cannot convert value of type '[Int]' to expected argument type 'String'}}
-[4].joined(separator: [[[1]]]) // expected-error {{cannot convert value of type 'Int' to expected element type 'String'}}
-// expected-error@-1 {{cannot convert value of type '[[[Int]]]' to expected argument type 'String'}}
+[4].joined(separator: [1])
+// expected-error@-1 {{cannot convert value of type 'Int' to expected element type 'String'}}
+// expected-error@-2 {{cannot convert value of type '[Int]' to expected argument type 'String'}}
+
+[4].joined(separator: [[[1]]])
+// expected-error@-1 {{cannot convert value of type 'Int' to expected element type 'String'}}
+// expected-error@-2 {{cannot convert value of type '[[[Int]]]' to expected argument type 'String'}}
 
 //===----------------------------------------------------------------------===//
 // nil/metatype comparisons
@@ -778,7 +782,8 @@ func testNilCoalescePrecedence(cond: Bool, a: Int?, r: ClosedRange<Int>?) {
   // ?? should have higher precedence than logical operators like || and comparisons.
   if cond || (a ?? 42 > 0) {}  // Ok.
   if (cond || a) ?? 42 > 0 {}  // expected-error {{cannot be used as a boolean}} {{15-15=(}} {{16-16= != nil)}}
-  // expected-error@-1:12 {{cannot convert value of type 'Bool' to expected argument type 'Int?'}}
+  // expected-error@-1 {{type 'Int' cannot be used as a boolean; test for '!= 0' instead}}
+  // expected-error@-2 {{cannot convert value of type 'Bool' to expected argument type 'Int'}}
   if (cond || a) ?? (42 > 0) {}  // expected-error {{cannot be used as a boolean}} {{15-15=(}} {{16-16= != nil)}}
 
   if cond || a ?? 42 > 0 {}    // Parses as the first one, not the others.
@@ -786,8 +791,7 @@ func testNilCoalescePrecedence(cond: Bool, a: Int?, r: ClosedRange<Int>?) {
 
   // ?? should have lower precedence than range and arithmetic operators.
   let r1 = r ?? (0...42) // ok
-  let r2 = (r ?? 0)...42 // not ok: expected-error 2 {{cannot convert value of type 'Int' to expected argument type 'ClosedRange<Int>'}}
-  // expected-error@-1 {{referencing operator function '...' on 'Comparable' requires that 'ClosedRange<Int>' conform to 'Comparable'}}
+  let r2 = (r ?? 0)...42 // not ok: expected-error {{binary operator '??' cannot be applied to operands of type 'ClosedRange<Int>?' and 'Int'}}
   let r3 = r ?? 0...42 // parses as the first one, not the second.
   
   
@@ -806,13 +810,13 @@ func testParenExprInTheWay() {
   let x = 42
   
   if x & 4.0 {}  // expected-error {{cannot convert value of type 'Double' to expected argument type 'Int'}}
-  // expected-error@-1 {{cannot convert value of type 'Int' to expected condition type 'Bool'}}
+  // expected-error@-1 {{type 'Int' cannot be used as a boolean; test for '!= 0' instead}}
   if (x & 4.0) {}   // expected-error {{cannot convert value of type 'Double' to expected argument type 'Int'}}
-  // expected-error@-1 {{cannot convert value of type 'Int' to expected condition type 'Bool'}}
+  // expected-error@-1 {{type 'Int' cannot be used as a boolean; test for '!= 0' instead}}
   if !(x & 4.0) {}  // expected-error {{cannot convert value of type 'Double' to expected argument type 'Int'}}
-  // expected-error@-1 {{cannot convert value of type 'Int' to expected argument type 'Bool'}}
+  // expected-error@-1 {{type 'Int' cannot be used as a boolean; test for '!= 0' instead}}
 
-  if x & x {} // expected-error {{cannot convert value of type 'Int' to expected condition type 'Bool'}}
+  if x & x {} // expected-error {{type 'Int' cannot be used as a boolean; test for '!= 0' instead}}
 }
 
 // <rdar://problem/21352576> Mixed method/property overload groups can cause a crash during constraint optimization
@@ -882,8 +886,8 @@ func r22348394() {
 }
 
 // <rdar://problem/23185177> Compiler crashes in Assertion failed: ((AllowOverwrite || !E->hasLValueAccessKind()) && "l-value access kind has already been set"), function visit
-protocol P { var y: String? { get } }
-func r23185177(_ x: P?) -> [String] {
+protocol Proto { var y: String? { get } }
+func r23185177(_ x: Proto?) -> [String] {
   return x?.y // expected-error{{cannot convert return expression of type 'String?' to return type '[String]'}}
 }
 
@@ -893,17 +897,17 @@ func r22913570() {
   f(1 + 1) // expected-error{{missing argument for parameter 'to' in call}}
 }
 
-
 // SR-628 mixing lvalues and rvalues in tuple expression
-var x = 0
-var y = 1
-let _ = (x, x + 1).0
-let _ = (x, 3).1
-(x,y) = (2,3)
-(x,4) = (1,2) // expected-error {{cannot assign to value: literals are not mutable}}
-(x,y).1 = 7 // expected-error {{cannot assign to immutable expression of type 'Int'}}
-x = (x,(3,y)).1.1
-
+do {
+  var x = 0
+  var y = 1
+  let _ = (x, x + 1).0
+  let _ = (x, 3).1
+  (x,y) = (2,3)
+  (x,4) = (1,2) // expected-error {{cannot assign to value: literals are not mutable}}
+  (x,y).1 = 7 // expected-error {{cannot assign to immutable expression of type 'Int'}}
+  x = (x,(3,y)).1.1
+}
 
 // SR-3439 subscript with pound exprssions.
 Sr3439: do {

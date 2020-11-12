@@ -188,7 +188,7 @@ func r22459135() {
 
 // <rdar://problem/19710848> QoI: Friendlier error message for "[] as Set"
 // <rdar://problem/22326930> QoI: "argument for generic parameter 'Element' could not be inferred" lacks context
-_ = [] as Set  // expected-error {{value of protocol type 'Any' cannot conform to 'Hashable'; only struct/enum/class types can conform to protocols}}
+_ = [] as Set  // expected-error {{protocol 'Any' as a type cannot conform to 'Hashable'}} expected-note {{only concrete types such as structs, enums and classes can conform to protocols}}
 // expected-note@-1 {{required by generic struct 'Set' where 'Element' = 'Any'}}
 
 
@@ -834,4 +834,27 @@ func sr_11491(_ value: [String]) {
   var arr: Set<String> = []
   arr.insert(value)
   // expected-error@-1 {{cannot convert value of type '[String]' to expected argument type 'String'}}
+}
+
+func test_dictionary_with_generic_mismatch_in_key_or_value() {
+  struct S<T> : Hashable {}
+  // expected-note@-1 2 {{arguments to generic parameter 'T' ('Int' and 'Bool') are expected to be equal}}
+
+  let _: [Int: S<Bool>] = [0: S<Bool>(), 1: S<Int>()]
+  // expected-error@-1 {{cannot convert value of type 'S<Int>' to expected dictionary value type 'S<Bool>'}}
+
+  let _: [S<Bool>: Int] = [S<Int>(): 42]
+  // expected-error@-1 {{cannot convert value of type 'S<Int>' to expected dictionary key type 'S<Bool>'}}
+}
+
+
+// rdar://problem/56212087 - unable to infer type for generic parameter `T`
+func rdar56212087() {
+  func setValue(_: Any?, forKey: String) {}
+
+  func foo<T: ExpressibleByStringLiteral>(_: String, _: T) -> T {
+    fatalError()
+  }
+
+  setValue(foo("", ""), forKey: "") // Ok (T is inferred as a `String` instead of `Any?`)
 }

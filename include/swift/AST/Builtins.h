@@ -26,7 +26,7 @@
 #include "llvm/Support/ErrorHandling.h"
 
 namespace llvm {
-enum class AtomicOrdering;
+enum class AtomicOrdering : unsigned;
 }
 
 namespace swift {
@@ -126,7 +126,7 @@ class IntrinsicInfo {
 public:
   llvm::Intrinsic::ID ID;
   SmallVector<Type, 4> Types;
-  bool hasAttribute(llvm::Attribute::AttrKind Kind) const;
+  const llvm::AttributeList &getOrCreateAttributes(ASTContext &Ctx) const;
 };
 
 /// Turn a string like "release" into the LLVM enum.
@@ -135,6 +135,11 @@ llvm::AtomicOrdering decodeLLVMAtomicOrdering(StringRef O);
 /// Returns true if the builtin with ID \p ID has a defined static overload for
 /// the type \p Ty.
 bool canBuiltinBeOverloadedForType(BuiltinValueKind ID, Type Ty);
+
+/// Retrieve the AST-level AsyncTaskAndContext type, used for the
+/// createAsyncTask builtin.
+Type getAsyncTaskAndContextType(ASTContext &ctx);
+
 }
 
 #endif

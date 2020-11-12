@@ -13,7 +13,7 @@ class C {}
 class D: C, P, Q { func paul() {}; func priscilla() {}; func quinn() {} }
 
 let property: some P = 1
-let deflessLet: some P // expected-error{{has no initializer}}
+let deflessLet: some P // expected-error{{has no initializer}} {{educational-notes=opaque-type-inference}}
 var deflessVar: some P // expected-error{{has no initializer}}
 
 struct GenericProperty<T: P> {
@@ -73,7 +73,7 @@ struct Test {
   let inferredOpaqueStructural2 = (bar(), bas()) // expected-error{{inferred type}}
 }
 
-//let zingle = {() -> some P in 1 } // FIXME ex/pected-error{{'some' types are only implemented}}
+let zingle = {() -> some P in 1 } // expected-error{{'some' types are only implemented}}
 
 // Invalid positions
 
@@ -173,13 +173,13 @@ func recursion(x: Int) -> some P {
   return recursion(x: x - 1)
 }
 
-func noReturnStmts() -> some P {} // expected-error {{function declares an opaque return type, but has no return statements in its body from which to infer an underlying type}}
+func noReturnStmts() -> some P {} // expected-error {{function declares an opaque return type, but has no return statements in its body from which to infer an underlying type}} {{educational-notes=opaque-type-inference}}
 
 func returnUninhabited() -> some P { // expected-note {{opaque return type declared here}}
     fatalError() // expected-error{{return type of global function 'returnUninhabited()' requires that 'Never' conform to 'P'}}
 }
 
-func mismatchedReturnTypes(_ x: Bool, _ y: Int, _ z: String) -> some P { // expected-error{{do not have matching underlying types}}
+func mismatchedReturnTypes(_ x: Bool, _ y: Int, _ z: String) -> some P { // expected-error{{do not have matching underlying types}} {{educational-notes=opaque-type-inference}}
   if x {
     return y // expected-note{{underlying type 'Int'}}
   } else {
@@ -209,7 +209,7 @@ func jan() -> some P {
   return [marcia(), marcia(), marcia()]
 }
 func marcia() -> some P {
-  return [marcia(), marcia(), marcia()] // expected-error{{defines the opaque type in terms of itself}}
+  return [marcia(), marcia(), marcia()] // expected-error{{defines the opaque type in terms of itself}} {{educational-notes=opaque-type-inference}}
 }
 
 protocol R {
@@ -270,10 +270,15 @@ func associatedTypeIdentity() {
 
   sameType(cr, c.r_out())
   sameType(dr, d.r_out())
-  sameType(cr, dr) // expected-error{{}} expected-note {{}}
+  sameType(cr, dr) // expected-error {{conflicting arguments to generic parameter 'T' ('(some R).S' (associated type of protocol 'R') vs. '(some R).S' (associated type of protocol 'R'))}}
   sameType(gary(candace()).r_out(), gary(candace()).r_out())
   sameType(gary(doug()).r_out(), gary(doug()).r_out())
-  sameType(gary(doug()).r_out(), gary(candace()).r_out()) // expected-error{{}} expected-note {{}}
+  // TODO(diagnostics): This is not great but the problem comes from the way solver discovers and attempts bindings, if we could detect that
+  // `(some R).S` from first reference to `gary()` in incosistent with the second one based on the parent type of `S` it would be much easier to diagnose.
+  sameType(gary(doug()).r_out(), gary(candace()).r_out())
+  // expected-error@-1:3  {{conflicting arguments to generic parameter 'T' ('(some R).S' (associated type of protocol 'R') vs. '(some R).S' (associated type of protocol 'R'))}}
+  // expected-error@-2:12 {{conflicting arguments to generic parameter 'T' ('some R' (result type of 'doug') vs. 'some R' (result type of 'candace'))}}
+  // expected-error@-3:34 {{conflicting arguments to generic parameter 'T' ('some R' (result type of 'doug') vs. 'some R' (result type of 'candace'))}}
 }
 
 func redeclaration() -> some P { return 0 } // expected-note 2{{previously declared}}
@@ -378,7 +383,7 @@ protocol P_51641323 {
 func rdar_51641323() {
   struct Foo: P_51641323 {
     var foo: some P_51641323 { // expected-note {{required by opaque return type of property 'foo'}}
-      {} // expected-error {{type '() -> ()' cannot conform to 'P_51641323'; only struct/enum/class types can conform to protocols}}
+      {} // expected-error {{type '() -> ()' cannot conform to 'P_51641323'}} expected-note {{only concrete types such as structs, enums and classes can conform to protocols}}
     }
   }
 }
@@ -474,4 +479,34 @@ dynamic func foo<S>(_ s: S) -> some Proto {
 @_dynamicReplacement(for: foo)
 func foo_repl<S>(_ s: S) -> some Proto {
  return   I()
+}
+
+protocol SomeProtocolA {}
+protocol SomeProtocolB {}
+struct SomeStructC: SomeProtocolA, SomeProtocolB {}
+let someProperty: SomeProtocolA & some SomeProtocolB = SomeStructC() // expected-error {{'some' should appear at the beginning of a composition}}{{35-40=}}{{19-19=some }}
+
+// An opaque result type on a protocol extension member effectively
+// contains an invariant reference to 'Self', and therefore cannot
+// be referenced on an existential type.
+
+protocol OpaqueProtocol {}
+extension OpaqueProtocol {
+  var asSome: some OpaqueProtocol { return self }
+  func getAsSome() -> some OpaqueProtocol { return self }
+  subscript(_: Int) -> some OpaqueProtocol { return self }
+}
+
+func takesOpaqueProtocol(existential: OpaqueProtocol) {
+  // this is not allowed:
+  _ = existential.asSome // expected-error{{member 'asSome' cannot be used on value of protocol type 'OpaqueProtocol'; use a generic constraint instead}}
+  _ = existential.getAsSome() // expected-error{{member 'getAsSome' cannot be used on value of protocol type 'OpaqueProtocol'; use a generic constraint instead}}
+  _ = existential[0] // expected-error{{member 'subscript' cannot be used on value of protocol type 'OpaqueProtocol'; use a generic constraint instead}}
+}
+
+func takesOpaqueProtocol<T : OpaqueProtocol>(generic: T) {
+  // these are all OK:
+  _ = generic.asSome
+  _ = generic.getAsSome()
+  _ = generic[0]
 }

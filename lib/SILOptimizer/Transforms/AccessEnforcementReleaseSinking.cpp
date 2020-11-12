@@ -136,7 +136,11 @@ static bool isBarrier(SILInstruction *inst) {
     case BuiltinValueKind::WillThrow:
     case BuiltinValueKind::CondFailMessage:
     case BuiltinValueKind::PoundAssert:
+    case BuiltinValueKind::TypePtrAuthDiscriminator:
     case BuiltinValueKind::GlobalStringTablePointer:
+    case BuiltinValueKind::COWBufferForReading:
+    case BuiltinValueKind::IntInstrprofIncrement:
+    case BuiltinValueKind::GetCurrentAsyncTask:
       return false;
 
     // Handle some rare builtins that may be sensitive to object lifetime
@@ -161,6 +165,8 @@ static bool isBarrier(SILInstruction *inst) {
     case BuiltinValueKind::AssignTakeArray:
     case BuiltinValueKind::UnsafeGuaranteed:
     case BuiltinValueKind::UnsafeGuaranteedEnd:
+    case BuiltinValueKind::CancelAsyncTask:
+    case BuiltinValueKind::CreateAsyncTask:
       return true;
     }
   }

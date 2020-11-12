@@ -53,6 +53,20 @@ public:
     }
   }
 
+  /// Construct an AnyFunctionRef from a decl context that might be
+  /// some sort of function.
+  static Optional<AnyFunctionRef> fromDeclContext(DeclContext *dc) {
+    if (auto fn = dyn_cast<AbstractFunctionDecl>(dc)) {
+      return AnyFunctionRef(fn);
+    }
+
+    if (auto ace = dyn_cast<AbstractClosureExpr>(dc)) {
+      return AnyFunctionRef(ace);
+    }
+
+    return None;
+  }
+
   CaptureInfo getCaptureInfo() const {
     if (auto *AFD = TheFunction.dyn_cast<AbstractFunctionDecl *>())
       return AFD->getCaptureInfo();
@@ -121,6 +135,21 @@ public:
     if (auto *CE = dyn_cast<ClosureExpr>(ACE))
       return CE->getBody();
     return cast<AutoClosureExpr>(ACE)->getBody();
+  }
+
+  void setTypecheckedBody(BraceStmt *stmt, bool isSingleExpression) {
+    if (auto *AFD = TheFunction.dyn_cast<AbstractFunctionDecl *>()) {
+      AFD->setBody(stmt, AbstractFunctionDecl::BodyKind::TypeChecked);
+      AFD->setHasSingleExpressionBody(isSingleExpression);
+      return;
+    }
+
+    auto *ACE = TheFunction.get<AbstractClosureExpr *>();
+    if (auto *CE = dyn_cast<ClosureExpr>(ACE)) {
+      return CE->setBody(stmt, isSingleExpression);
+    }
+
+    llvm_unreachable("autoclosures don't have statement bodies");
   }
 
   DeclContext *getAsDeclContext() const {
@@ -208,6 +237,23 @@ public:
     llvm_unreachable("unexpected AnyFunctionRef representation");
   }
 
+  friend bool operator==(AnyFunctionRef lhs, AnyFunctionRef rhs) {
+     return lhs.TheFunction == rhs.TheFunction;
+   }
+
+   friend bool operator!=(AnyFunctionRef lhs, AnyFunctionRef rhs) {
+     return lhs.TheFunction != rhs.TheFunction;
+   }
+
+  friend llvm::hash_code hash_value(AnyFunctionRef fn) {
+    using llvm::hash_value;
+    return hash_value(fn.TheFunction.getOpaqueValue());
+  }
+
+  friend SourceLoc extractNearestSourceLoc(AnyFunctionRef fn) {
+    return fn.getLoc();
+  }
+
 private:
   ArrayRef<AnyFunctionType::Yield>
   getYieldResultsImpl(SmallVectorImpl<AnyFunctionType::Yield> &buffer,
@@ -234,6 +280,8 @@ private:
 #if SWIFT_COMPILER_IS_MSVC
 #pragma warning(pop)
 #endif
+
+void simple_display(llvm::raw_ostream &out, AnyFunctionRef fn);
 
 } // namespace swift
 

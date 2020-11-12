@@ -11,8 +11,12 @@
     - [Linting](#linting)
     - [Source Compatibility Testing](#source-compatibility-testing)
     - [Sourcekit Stress Testing](#sourcekit-stress-testing)
-    - [Specific Preset Testing](#specific-preset-testing)
     - [Build Swift Toolchain](#build-swift-toolchain)
+    - [Build and Test Stdlib against Snapshot Toolchain](#build-and-test-stdlib-against-snapshot-toolchain)
+    - [Specific Preset Testing](#specific-preset-testing)
+    - [Specific Preset Testing against a Snapshot Toolchain](#specific-preset-testing-against-a-snapshot-toolchain)
+    - [Running Non-Executable Device Tests using Specific Preset Testing](#running-non-executable-device-tests-using-specific-preset-testing)
+    - [Build and Test the Minimal Freestanding Stdlib using Toolchain Specific Preset Testing](#build-and-test-the-minimal-freestanding-stdlib-using-toolchain-specific-preset-testing)
     - [Testing Compiler Performance](#testing-compiler-performance)
     - [Swift Community Hosted CI Pull Request Testing](#swift-community-hosted-ci-pull-request-testing)
 - [Cross Repository Testing](#cross-repository-testing)
@@ -91,6 +95,11 @@ macOS platform               | @swift-ci Please smoke benchmark              | S
 Linux platform               | @swift-ci Please test Linux platform          | Swift Test Linux Platform (smoke test)<br>Swift Test Linux Platform
 Linux platform               | @swift-ci Please clean test Linux platform    | Swift Test Linux Platform (smoke test)<br>Swift Test Linux Platform
 macOS platform               | @swift-ci Please ASAN test                    | Swift ASAN Test OS X Platform
+Ubuntu 18.04                 | @swift-ci Please test Ubuntu 18.04 platform   | Swift Test Ubuntu 18.04 Platform
+Ubuntu 20.04                 | @swift-ci Please test Ubuntu 20.04 platform   | Swift Test Ubuntu 20.04 Platform
+CentOS 7                     | @swift-ci Please test CentOS 7 platform       | Swift Test CentOS 7 Platform
+CentOS 8                     | @swift-ci Please test CentOS 8 platform       | Swift Test CentOS 8 Platform
+Amazon Linux 2               | @swift-ci Please test Amazon Linux 2 platform | Swift Test Amazon Linux 2 Platform
 
 The core principles of validation testing is that:
 
@@ -148,6 +157,21 @@ Platform       | Comment | Check Status
 ------------   | ------- | ------------
 macOS platform | @swift-ci Please Sourcekit Stress test | Swift Sourcekit Stress Tester on macOS Platform
 
+### Build Swift Toolchain
+
+Platform       | Comment | Check Status
+------------   | ------- | ------------
+macOS platform | @swift-ci Please Build Toolchain macOS Platform| Swift Build Toolchain macOS Platform
+Linux platform | @swift-ci Please Build Toolchain Linux Platform| Swift Build Toolchain Linux Platform
+
+### Build and Test Stdlib against Snapshot Toolchain
+
+To test/build the stdlib for a branch that changes only the stdlib using a last known good snapshot toolchain:
+
+Platform       | Comment | Check Status
+------------   | ------- | ------------
+macOS platform | @swift-ci Please test stdlib with toolchain| Swift Test stdlib with toolchain macOS Platform
+
 ### Specific Preset Testing
 
 Platform       | Comment | Check Status
@@ -161,14 +185,42 @@ For example:
 ```
 preset=buildbot_incremental,tools=RA,stdlib=RD,smoketest=macosx,single-thread
 @swift-ci Please test with preset macOS
-
 ```
-### Build Swift Toolchain
+
+
+### Specific Preset Testing against a Snapshot Toolchain
+
+One can also run an arbitrary preset against a snapshot toolchain 
 
 Platform       | Comment | Check Status
 ------------   | ------- | ------------
-macOS platform | @swift-ci Please Build Toolchain macOS Platform| Swift Build Toolchain macOS Platform
-Linux platform | @swift-ci Please Build Toolchain Linux Platform| Swift Build Toolchain Linux Platform
+macOS platform | preset=<preset> <br> @swift-ci Please test with toolchain and preset| Swift Test stdlib with toolchain macOS Platform (Preset)
+
+For example:
+
+```
+preset=$PRESET_NAME
+@swift-ci Please test with toolchain and preset
+```
+
+### Running Non-Executable Device Tests using Specific Preset Testing
+
+Using the specific preset testing, one can run non-executable device tests by
+telling swift-ci:
+
+```
+preset=buildbot,tools=RA,stdlib=RD,test=non_executable
+@swift-ci Please test with preset macOS
+```
+
+### Build and Test the Minimal Freestanding Stdlib using Toolchain Specific Preset Testing
+
+To test the minimal freestanding stdlib on macho, you can use the support for running a miscellanous preset against a snapshot toolchain.
+
+```
+preset=stdlib_S_standalone_minimal_macho_x86_64,build,test
+@swift-ci please test with toolchain and preset
+```
 
 ### Testing Compiler Performance
 
@@ -184,7 +236,7 @@ These commands will:
 3. Compare the obtained data to the baseline (stored in git) and HEAD (version of a compiler built without the PR changes)
 4. Report the results in a pull request comment
 
-For the detailed explanation of how compiler performance is measured, please refer to [this document](https://github.com/apple/swift/blob/master/docs/CompilerPerformance.md).
+For the detailed explanation of how compiler performance is measured, please refer to [this document](https://github.com/apple/swift/blob/main/docs/CompilerPerformance.md).
 
 ## Cross Repository Testing
 

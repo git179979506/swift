@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import sys
 import traceback
+from shutil import copyfile
 
 BARE_INTERFACE_SEARCH_PATHS = [
     "usr/lib/swift",
@@ -105,15 +106,13 @@ def run_command(args, dry_run):
     try:
         out, err = proc.communicate()
         exitcode = proc.returncode
-        return (exitcode, out, err)
+        return (exitcode, out.decode('utf-8'), err.decode('utf-8'))
     except KeyboardInterrupt:
         proc.terminate()
         raise
 
 
-def make_dirs_if_needed(path, dry_run):
-    if dry_run:
-        return
+def make_dirs_if_needed(path):
     try:
         os.makedirs(path)
     except OSError as e:
@@ -231,7 +230,7 @@ def log_output_to_file(content, module_name, interface_base, label, log_path):
         return
     if not content:
         return
-    make_dirs_if_needed(log_path, dry_run=False)
+    make_dirs_if_needed(log_path)
     log_name = module_name + "-" + interface_base + "-" + label + ".txt"
     with open(os.path.join(log_path, log_name), "w") as output_file:
         output_file.write(content)
@@ -241,29 +240,11 @@ def looks_like_iosmac(interface_base):
     return 'ios-macabi' in interface_base
 
 
-def rename_interface_for_iosmac_if_needed(interface_base, module_path):
-    """Hack: Both macOS and iOSMac use 'x86_64' as the short name for a module
-    interface file, and while we want to move away from this it's something we
-    need to handle in the short term. Manually rename these to the full form of
-    the target-specific module when we're obviously on macOS or iOSMac.
-    """
-    if interface_base != 'x86_64':
-        return interface_base
-    if '/iOSSupport/' in module_path:
-        return 'x86_64-apple-ios-macabi'
-    if '/MacOS' in module_path:
-        return 'x86_64-apple-macos'
-    return interface_base
-
-
 def process_module(module_file):
     global args, shared_output_lock
     try:
         interface_base, _ = \
             os.path.splitext(os.path.basename(module_file.path))
-        interface_base = \
-            rename_interface_for_iosmac_if_needed(interface_base,
-                                                  module_file.path)
 
         swiftc = os.getenv('SWIFT_EXEC',
                            os.path.join(os.path.dirname(__file__), 'swiftc'))
@@ -272,7 +253,6 @@ def process_module(module_file):
             '-build-module-from-parseable-interface',
             '-sdk', args.sdk,
             '-prebuilt-module-cache-path', args.output_dir,
-            '-track-system-dependencies'
         ]
         module_cache_path = ""
         if args.module_cache_path:
@@ -313,7 +293,7 @@ def process_module(module_file):
                                    module_file.name + ".swiftmodule")
 
         if interface_base != module_file.name:
-            make_dirs_if_needed(output_path, args.dry_run)
+            make_dirs_if_needed(output_path)
             output_path = os.path.join(output_path,
                                        interface_base + ".swiftmodule")
 
@@ -372,6 +352,24 @@ def process_module_files(pool, module_files):
     return overall_exit_status
 
 
+def getSDKVersion(sdkroot):
+    settingPath = os.path.join(sdkroot, 'SDKSettings.json')
+    with open(settingPath) as json_file:
+        data = json.load(json_file)
+        return data['Version']
+    fatal("Failed to get SDK version from: " + settingPath)
+
+
+def copySystemVersionFile(sdkroot, output):
+    sysInfoPath = os.path.join(sdkroot,
+                               'System/Library/CoreServices/SystemVersion.plist')
+    destInfoPath = os.path.join(output, 'SystemVersion.plist')
+    try:
+        copyfile(sysInfoPath, destInfoPath)
+    except BaseException as e:
+        print("cannot copy from " + sysInfoPath + " to " + destInfoPath + ": " + str(e))
+
+
 def main():
     global args, shared_output_lock
     parser = create_parser()
@@ -391,6 +389,12 @@ def main():
     if not os.path.isdir(args.sdk):
         fatal("invalid SDK: " + args.sdk)
 
+    # if the given output dir ends with 'prebuilt-modules', we should
+    # append the SDK version number so all modules will built into
+    # the SDK-versioned sub-directory.
+    if os.path.basename(args.output_dir) == 'prebuilt-modules':
+        args.output_dir = os.path.join(args.output_dir, getSDKVersion(args.sdk))
+
     xfails = ()
     if args.ignore_non_stdlib_failures:
         if args.xfails:
@@ -401,10 +405,23 @@ def main():
         with open(args.xfails) as xfails_file:
             xfails = json.load(xfails_file)
 
-    make_dirs_if_needed(args.output_dir, args.dry_run)
-    shared_output_lock = multiprocessing.Lock()
-    pool = multiprocessing.Pool(args.jobs, set_up_child,
-                                (args, shared_output_lock))
+    make_dirs_if_needed(args.output_dir)
+
+    # Copy a file containing SDK build version into the prebuilt module dir,
+    # so we can keep track of the SDK version we built from.
+    copySystemVersionFile(args.sdk, args.output_dir)
+    if 'ANDROID_DATA' not in os.environ:
+        shared_output_lock = multiprocessing.Lock()
+        pool = multiprocessing.Pool(args.jobs, set_up_child,
+                                    (args, shared_output_lock))
+    else:
+        # Android doesn't support Python's multiprocessing as it doesn't have
+        # sem_open, so switch to a ThreadPool instead.
+        import threading
+        shared_output_lock = threading.Lock()
+        from multiprocessing.pool import ThreadPool
+        pool = ThreadPool(args.jobs, set_up_child,
+                          (args, shared_output_lock))
 
     interface_framework_dirs = (args.interface_framework_dirs or
                                 DEFAULT_FRAMEWORK_INTERFACE_SEARCH_PATHS)
@@ -425,6 +442,10 @@ def main():
     non_stdlib_module_files = (
         x for x in module_files if x.name != STDLIB_NAME)
     status = process_module_files(pool, non_stdlib_module_files)
+    if os.name == 'nt':
+        import ctypes
+        Kernel32 = ctypes.cdll.LoadLibrary("Kernel32.dll")
+        Kernel32.ExitProcess(ctypes.c_ulong(status))
     sys.exit(status)
 
 

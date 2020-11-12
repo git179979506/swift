@@ -17,6 +17,7 @@
 #include "swift/AST/ASTContext.h"
 #include "swift/AST/Decl.h"
 #include "swift/AST/Expr.h"
+#include "swift/Basic/SourceManager.h"
 #include "swift/Parse/PersistentParserState.h"
 
 using namespace swift;
@@ -26,39 +27,26 @@ PersistentParserState::PersistentParserState() { }
 PersistentParserState::~PersistentParserState() { }
 
 void PersistentParserState::setCodeCompletionDelayedDeclState(
-    CodeCompletionDelayedDeclKind Kind, unsigned Flags,
-    DeclContext *ParentContext, SourceRange BodyRange, SourceLoc PreviousLoc) {
+    SourceManager &SM, unsigned BufferID, CodeCompletionDelayedDeclKind Kind,
+    unsigned Flags, DeclContext *ParentContext, SourceRange BodyRange,
+    SourceLoc PreviousLoc) {
   assert(!CodeCompletionDelayedDeclStat.get() &&
          "only one decl can be delayed for code completion");
+  unsigned startOffset = SM.getLocOffsetInBuffer(BodyRange.Start, BufferID);
+  unsigned endOffset = SM.getLocOffsetInBuffer(BodyRange.End, BufferID);
+  unsigned prevOffset = ~0U;
+  if (PreviousLoc.isValid())
+    prevOffset = SM.getLocOffsetInBuffer(PreviousLoc, BufferID);
+
   CodeCompletionDelayedDeclStat.reset(new CodeCompletionDelayedDeclState(
-      Kind, Flags, ParentContext, BodyRange, PreviousLoc,
-      ScopeInfo.saveCurrentScope()));
+      Kind, Flags, ParentContext, ScopeInfo.saveCurrentScope(), startOffset,
+      endOffset, prevOffset));
 }
 
-void PersistentParserState::delayDeclList(IterableDeclContext *D) {
-  DelayedDeclLists.push_back(D);
-}
-
-void PersistentParserState::parseAllDelayedDeclLists() {
-  for (auto IDC : DelayedDeclLists)
-    IDC->loadAllMembers();
-}
-
-void PersistentParserState::forEachDelayedSourceRange(
-    const SourceFile *primaryFile, function_ref<void(SourceRange)> fn) const {
-  // FIXME: separate out unparsed ranges by primary file
-  for (const auto *idc : DelayedDeclLists) {
-    // FIXME: better to check for the exact request (ParseMembersRequest)
-    // in the Evaluator cache
-    if (!idc->hasUnparsedMembers())
-      continue;
-    const auto *d = idc->getDecl();
-    SourceRange sr;
-    if (auto *nt = dyn_cast<NominalTypeDecl>(d))
-      sr = nt->getBraces();
-    else if (auto *e = dyn_cast<ExtensionDecl>(d))
-      sr = e->getBraces();
-    if (sr.isValid())
-      fn(sr);
-  }
+void PersistentParserState::restoreCodeCompletionDelayedDeclState(
+    const CodeCompletionDelayedDeclState &other) {
+  CodeCompletionDelayedDeclStat.reset(new CodeCompletionDelayedDeclState(
+      other.Kind, other.Flags, other.ParentContext,
+      ScopeInfo.saveCurrentScope(), other.StartOffset, other.EndOffset,
+      other.PrevOffset));
 }

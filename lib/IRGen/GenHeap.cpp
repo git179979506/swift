@@ -33,6 +33,7 @@
 #include "ConstantBuilder.h"
 #include "Explosion.h"
 #include "GenClass.h"
+#include "GenPointerAuth.h"
 #include "GenProto.h"
 #include "GenType.h"
 #include "IRGenDebugInfo.h"
@@ -54,6 +55,10 @@ namespace {
                                 FixedTypeInfo> { \
     llvm::PointerIntPair<llvm::Type*, 1, bool> ValueTypeAndIsOptional; \
   public: \
+    TypeLayoutEntry *buildTypeLayoutEntry(IRGenModule &IGM, \
+                                        SILType T) const override { \
+      return IGM.typeLayoutCache.getOrCreateScalarEntry(*this, T); \
+    } \
     Nativeness##Name##ReferenceTypeInfo(llvm::Type *valueType, \
                                     llvm::Type *type, \
                                     Size size, Alignment alignment, \
@@ -138,6 +143,10 @@ namespace {
                              alignment, IsNotPOD, IsFixedSize), \
         ValueTypeAndIsOptional(valueType, isOptional) {} \
     enum { IsScalarPOD = false }; \
+    TypeLayoutEntry *buildTypeLayoutEntry(IRGenModule &IGM,                    \
+                                          SILType T) const override {          \
+      return IGM.typeLayoutCache.getOrCreateScalarEntry(*this, T);             \
+    } \
     llvm::Type *getScalarType() const { \
       return ValueTypeAndIsOptional.getPointer(); \
     } \
@@ -248,18 +257,19 @@ HeapLayout::HeapLayout(IRGenModule &IGM, LayoutStrategy strategy,
                        ArrayRef<SILType> fieldTypes,
                        ArrayRef<const TypeInfo *> fieldTypeInfos,
                        llvm::StructType *typeToFill,
-                       NecessaryBindings &&bindings)
-  : StructLayout(IGM, /*decl=*/nullptr, LayoutKind::HeapObject, strategy,
-                 fieldTypeInfos, typeToFill),
-    ElementTypes(fieldTypes.begin(), fieldTypes.end()),
-    Bindings(std::move(bindings))
-{
+                       NecessaryBindings &&bindings, unsigned bindingsIndex)
+    : StructLayout(IGM, /*decl=*/nullptr, LayoutKind::HeapObject, strategy,
+                   fieldTypeInfos, typeToFill),
+      ElementTypes(fieldTypes.begin(), fieldTypes.end()),
+      Bindings(std::move(bindings)), BindingsIndex(bindingsIndex) {
 #ifndef NDEBUG
   assert(fieldTypeInfos.size() == fieldTypes.size()
          && "type infos don't match types");
   if (!Bindings.empty()) {
-    assert(fieldTypeInfos.size() >= 1 && "no field for bindings");
-    auto fixedBindingsField = dyn_cast<FixedTypeInfo>(fieldTypeInfos[0]);
+    assert(fieldTypeInfos.size() >= (bindingsIndex + 1) &&
+           "no field for bindings");
+    auto fixedBindingsField =
+        dyn_cast<FixedTypeInfo>(fieldTypeInfos[bindingsIndex]);
     assert(fixedBindingsField
            && "bindings field is not fixed size");
     assert(fixedBindingsField->getFixedSize()
@@ -276,14 +286,14 @@ static llvm::Value *calcInitOffset(swift::irgen::IRGenFunction &IGF,
                                    const swift::irgen::HeapLayout &layout) {
   llvm::Value *offset = nullptr;
   if (i == 0) {
-    auto startoffset = layout.getSize();
-    offset = llvm::ConstantInt::get(IGF.IGM.SizeTy, startoffset.getValue());
+    auto startOffset = layout.getHeaderSize();
+    offset = llvm::ConstantInt::get(IGF.IGM.SizeTy, startOffset.getValue());
     return offset;
   }
   auto &prevElt = layout.getElement(i - 1);
   auto prevType = layout.getElementTypes()[i - 1];
   // Start calculating offsets from the last fixed-offset field.
-  Size lastFixedOffset = layout.getElement(i - 1).getByteOffset();
+  Size lastFixedOffset = layout.getElement(i - 1).getByteOffsetDuringLayout();
   if (auto *fixedType = dyn_cast<FixedTypeInfo>(&prevElt.getType())) {
     // If the last fixed-offset field is also fixed-size, we can
     // statically compute the end of the fixed-offset fields.
@@ -416,7 +426,8 @@ static llvm::Function *createDtorFn(IRGenModule &IGM,
   if (layout.hasBindings()) {
     // The type metadata bindings should be at a fixed offset, so we can pass
     // None for NonFixedOffsets. If we didn't, we'd have a chicken-egg problem.
-    auto bindingsAddr = layout.getElement(0).project(IGF, structAddr, None);
+    auto bindingsAddr = layout.getElement(layout.getBindingsIndex())
+                            .project(IGF, structAddr, None);
     layout.getBindings().restore(IGF, bindingsAddr, MetadataState::Complete);
   }
 
@@ -473,7 +484,8 @@ static llvm::Constant *buildPrivateMetadata(IRGenModule &IGM,
   ConstantInitBuilder builder(IGM);
   auto fields = builder.beginStruct(IGM.FullBoxMetadataStructTy);
 
-  fields.add(dtorFn);
+  fields.addSignedPointer(dtorFn, IGM.getOptions().PointerAuth.HeapDestructors,
+                          PointerAuthEntity::Special::HeapDestructor);
   fields.addNullPointer(IGM.WitnessTablePtrTy);
   {
     auto kindStruct = fields.beginStruct(IGM.TypeMetadataStructTy);
@@ -1229,11 +1241,37 @@ llvm::Constant *IRGenModule::getFixLifetimeFn() {
                             llvm::Attribute::NoInline);
 
   // Give the function an empty body.
-  auto entry = llvm::BasicBlock::Create(LLVMContext, "", fixLifetime);
-  llvm::ReturnInst::Create(LLVMContext, entry);
+  auto entry = llvm::BasicBlock::Create(getLLVMContext(), "", fixLifetime);
+  llvm::ReturnInst::Create(getLLVMContext(), entry);
   
   FixLifetimeFn = fixLifetime;
   return fixLifetime;
+}
+
+llvm::Constant *IRGenModule::getFixedClassInitializationFn() {
+  if (FixedClassInitializationFn)
+    return *FixedClassInitializationFn;
+  
+  // If ObjC interop is disabled, we don't need to do fixed class
+  // initialization.
+  llvm::Constant *fn;
+  if (!ObjCInterop) {
+    fn = nullptr;
+  } else {
+    // In new enough ObjC runtimes, objc_opt_self provides a direct fast path
+    // to realize a class.
+    if (getAvailabilityContext()
+         .isContainedIn(Context.getSwift51Availability())) {
+      fn = getObjCOptSelfFn();
+    }
+    // Otherwise, the Swift runtime always provides a `get
+    else {
+      fn = getGetInitializedObjCClassFn();
+    }
+  }
+  
+  FixedClassInitializationFn = fn;
+  return fn;
 }
 
 /// Fix the lifetime of a live value. This communicates to the LLVM level ARC
@@ -1460,7 +1498,7 @@ public:
 
     auto boxDescriptor = IGF.IGM.getAddrOfBoxDescriptor(
         boxedInterfaceType,
-        env ? env->getGenericSignature()->getCanonicalSignature()
+        env ? env->getGenericSignature().getCanonicalSignature()
             : CanGenericSignature());
     llvm::Value *allocation = IGF.emitUnmanagedAlloc(layout, name,
                                                      boxDescriptor);
@@ -1695,12 +1733,12 @@ void IRGenFunction::emit##ID(llvm::Value *value, Address src) {       \
 #undef DEFINE_STORE_WEAK_OP
 #undef NEVER_OR_SOMETIMES_LOADABLE_CHECKED_REF_STORAGE_HELPER
 
-llvm::Value *IRGenFunction::getLocalSelfMetadata() {
-  assert(LocalSelf && "no local self metadata");
+llvm::Value *IRGenFunction::getDynamicSelfMetadata() {
+  assert(SelfValue && "no local self metadata");
 
   // If we already have a metatype, just return it.
   if (SelfKind == SwiftMetatype)
-    return LocalSelf;
+    return SelfValue;
 
   // We need to materialize a metatype. Emit the code for that once at the
   // top of the function and cache the result.
@@ -1716,9 +1754,9 @@ llvm::Value *IRGenFunction::getLocalSelfMetadata() {
   // with the correct value.
 
   llvm::IRBuilderBase::InsertPointGuard guard(Builder);
-  auto insertPt = isa<llvm::Instruction>(LocalSelf)
+  auto insertPt = isa<llvm::Instruction>(SelfValue)
                       ? std::next(llvm::BasicBlock::iterator(
-                            cast<llvm::Instruction>(LocalSelf)))
+                            cast<llvm::Instruction>(SelfValue)))
                       : CurFn->getEntryBlock().begin();
   Builder.SetInsertPoint(&CurFn->getEntryBlock(), insertPt);
 
@@ -1726,19 +1764,19 @@ llvm::Value *IRGenFunction::getLocalSelfMetadata() {
   case SwiftMetatype:
     llvm_unreachable("Already handled");
   case ObjCMetatype:
-    LocalSelf = emitObjCMetadataRefForMetadata(*this, LocalSelf);
+    SelfValue = emitObjCMetadataRefForMetadata(*this, SelfValue);
     SelfKind = SwiftMetatype;
     break;
   case ObjectReference:
-    LocalSelf = emitDynamicTypeOfHeapObject(*this, LocalSelf,
+    SelfValue = emitDynamicTypeOfHeapObject(*this, SelfValue,
                                 MetatypeRepresentation::Thick,
-                                SILType::getPrimitiveObjectType(LocalSelfType),
+                                SILType::getPrimitiveObjectType(SelfType),
                                 /*allow artificial*/ false);
     SelfKind = SwiftMetatype;
     break;
   }
 
-  return LocalSelf;
+  return SelfValue;
 }
 
 /// Given a non-tagged object pointer, load a pointer to its class object.

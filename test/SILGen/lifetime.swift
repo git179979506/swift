@@ -263,7 +263,7 @@ struct Daleth {
 }
 
 class He {
-  
+
   // -- default allocator:
   // CHECK-LABEL: sil hidden [exact_self_class] [ossa] @$s8lifetime2HeC{{[_0-9a-zA-Z]*}}fC : $@convention(method) (@thick He.Type) -> @owned He {
   // CHECK: bb0({{%.*}} : $@thick He.Type):
@@ -292,7 +292,7 @@ struct Waw {
   var b:Val
 
   // -- loadable value initializer with tuple destructuring:
-  // CHECK-LABEL: sil hidden [ossa] @$s8lifetime3WawV{{[_0-9a-zA-Z]*}}fC : $@convention(method) (@owned Ref, Val, Val, @thin Waw.Type) -> @owned Waw 
+  // CHECK-LABEL: sil hidden [ossa] @$s8lifetime3WawV{{[_0-9a-zA-Z]*}}fC : $@convention(method) (@owned Ref, Val, Val, @thin Waw.Type) -> @owned Waw
   // CHECK: bb0([[A0:%.*]] : @owned $Ref, [[A1:%.*]] : $Val, [[B:%.*]] : $Val, {{%.*}} : $@thin Waw.Type):
   // CHECK-NEXT:   [[A:%.*]] = tuple ([[A0]] : {{.*}}, [[A1]] : {{.*}})
   // CHECK-NEXT:   [[RET:%.*]] = struct $Waw ([[A]] : {{.*}}, [[B]] : {{.*}})
@@ -359,7 +359,7 @@ func logical_lvalue_lifetime(_ r: RefWithProp, _ i: Int, _ v: Val) {
   r.int_prop = i
   // CHECK:   [[READ:%.*]] = begin_access [read] [unknown] [[PR]]
   // CHECK: [[R1:%[0-9]+]] = load [copy] [[READ]]
-  // CHECK: [[SETTER_METHOD:%[0-9]+]] = class_method {{.*}} : $RefWithProp, #RefWithProp.int_prop!setter.1 : (RefWithProp) -> (Int) -> (), $@convention(method) (Int, @guaranteed RefWithProp) -> ()
+  // CHECK: [[SETTER_METHOD:%[0-9]+]] = class_method {{.*}} : $RefWithProp, #RefWithProp.int_prop!setter : (RefWithProp) -> (Int) -> (), $@convention(method) (Int, @guaranteed RefWithProp) -> ()
   // CHECK: apply [[SETTER_METHOD]]({{.*}}, [[R1]])
   // CHECK: destroy_value [[R1]]
 
@@ -367,7 +367,7 @@ func logical_lvalue_lifetime(_ r: RefWithProp, _ i: Int, _ v: Val) {
   // CHECK: [[READ:%.*]] = begin_access [read] [unknown] [[PR]]
   // CHECK: [[R2:%[0-9]+]] = load [copy] [[READ]]
   // CHECK: [[R2BORROW:%[0-9]+]] = begin_borrow [[R2]]
-  // CHECK: [[MODIFY:%[0-9]+]] = class_method [[R2BORROW]] : $RefWithProp, #RefWithProp.aleph_prop!modify.1 :
+  // CHECK: [[MODIFY:%[0-9]+]] = class_method [[R2BORROW]] : $RefWithProp, #RefWithProp.aleph_prop!modify :
   // CHECK: ([[ADDR:%.*]], [[TOKEN:%.*]]) = begin_apply [[MODIFY]]([[R2BORROW]])
   // CHECK: end_apply [[TOKEN]]
 }
@@ -398,26 +398,23 @@ class Foo<T> {
     // CHECK: [[THIS:%[0-9]+]] = mark_uninitialized
 
     // -- initialization for y
-    // CHECK: [[Y_INIT:%[0-9]+]] = function_ref @$s8lifetime3FooC1ySi_AA3RefCtvpfi : $@convention(thin) <τ_0_0> () -> (Int, @owned Ref)
-    // CHECK: [[Y_VALUE:%[0-9]+]] = apply [[Y_INIT]]<T>()
-    // CHECK: ([[Y_EXTRACTED_0:%.*]], [[Y_EXTRACTED_1:%.*]]) = destructure_tuple
     // CHECK: [[BORROWED_THIS:%.*]] = begin_borrow [[THIS]]
     // CHECK: [[THIS_Y:%.*]] = ref_element_addr [[BORROWED_THIS]] : {{.*}}, #Foo.y
-    // CHECK: [[WRITE:%.*]] = begin_access [modify] [dynamic] [[THIS_Y]] : $*(Int, Ref)
-    // CHECK: [[THIS_Y_0:%.*]] = tuple_element_addr [[WRITE]] : $*(Int, Ref), 0
-    // CHECK: assign [[Y_EXTRACTED_0]] to [[THIS_Y_0]]
-    // CHECK: [[THIS_Y_1:%.*]] = tuple_element_addr [[WRITE]] : $*(Int, Ref), 1
-    // CHECK: assign [[Y_EXTRACTED_1]] to [[THIS_Y_1]]
-    // CHECK: end_access [[WRITE]] : $*(Int, Ref)
+    // CHECK: [[Y_INIT:%[0-9]+]] = function_ref @$s8lifetime3FooC1ySi_AA3RefCtvpfi : $@convention(thin) <τ_0_0> () -> (Int, @owned Ref)
+    // CHECK: [[THIS_Y_0:%.*]] = tuple_element_addr [[THIS_Y]] : $*(Int, Ref), 0
+    // CHECK: [[THIS_Y_1:%.*]] = tuple_element_addr [[THIS_Y]] : $*(Int, Ref), 1
+    // CHECK: [[Y_VALUE:%[0-9]+]] = apply [[Y_INIT]]<T>()
+    // CHECK: ([[Y_EXTRACTED_0:%.*]], [[Y_EXTRACTED_1:%.*]]) = destructure_tuple
+    // CHECK: store [[Y_EXTRACTED_0]] to [trivial] [[THIS_Y_0]]
+    // CHECK: store [[Y_EXTRACTED_1]] to [init] [[THIS_Y_1]]
     // CHECK: end_borrow [[BORROWED_THIS]]
 
     // -- Initialization for w
-    // CHECK: [[Z_FUNC:%.*]] = function_ref @$s{{.*}}8lifetime3FooC1wAA3RefCvpfi : $@convention(thin) <τ_0_0> () -> @owned Ref
-    // CHECK: [[Z_RESULT:%.*]] = apply [[Z_FUNC]]<T>()
     // CHECK: [[BORROWED_THIS:%.*]] = begin_borrow [[THIS]]
     // CHECK: [[THIS_Z:%.*]] = ref_element_addr [[BORROWED_THIS]]
-    // CHECK: [[WRITE:%.*]] = begin_access [modify] [dynamic] [[THIS_Z]] : $*Ref
-    // CHECK: assign [[Z_RESULT]] to [[WRITE]]
+    // CHECK: [[Z_FUNC:%.*]] = function_ref @$s{{.*}}8lifetime3FooC1wAA3RefCvpfi : $@convention(thin) <τ_0_0> () -> @owned Ref
+    // CHECK: [[Z_RESULT:%.*]] = apply [[Z_FUNC]]<T>()
+    // CHECK: store [[Z_RESULT]] to [init] [[THIS_Z]]
     // CHECK: end_borrow [[BORROWED_THIS]]
 
     // -- Initialization for x
@@ -431,7 +428,7 @@ class Foo<T> {
 
     z = Foo<T>.makeT()
     // CHECK: [[FOOMETA:%[0-9]+]] = metatype $@thick Foo<T>.Type
-    // CHECK: [[MAKET:%[0-9]+]] = class_method [[FOOMETA]] : {{.*}}, #Foo.makeT!1
+    // CHECK: [[MAKET:%[0-9]+]] = class_method [[FOOMETA]] : {{.*}}, #Foo.makeT :
     // CHECK: ref_element_addr
 
     // -- cleanup this lvalue and return this
@@ -462,11 +459,10 @@ class Foo<T> {
     // -- First we initialize #Foo.y.
     // CHECK:   [[BORROWED_THIS:%.*]] = begin_borrow [[THIS]]
     // CHECK:   [[THIS_Y:%.*]] = ref_element_addr [[BORROWED_THIS]] : $Foo<T>, #Foo.y
-    // CHECK:   [[WRITE:%.*]] = begin_access [modify] [dynamic] [[THIS_Y]] : $*(Int, Ref)
-    // CHECK:   [[THIS_Y_1:%.*]] = tuple_element_addr [[WRITE]] : $*(Int, Ref), 0
-    // CHECK:   assign {{.*}} to [[THIS_Y_1]] : $*Int
-    // CHECK:   [[THIS_Y_2:%.*]] = tuple_element_addr [[WRITE]] : $*(Int, Ref), 1
-    // CHECK:   assign {{.*}} to [[THIS_Y_2]] : $*Ref
+    // CHECK:   [[THIS_Y_1:%.*]] = tuple_element_addr [[THIS_Y]] : $*(Int, Ref), 0
+    // CHECK:   [[THIS_Y_2:%.*]] = tuple_element_addr [[THIS_Y]] : $*(Int, Ref), 1
+    // CHECK:   store {{.*}} to [trivial] [[THIS_Y_1]] : $*Int
+    // CHECK:   store {{.*}} to [init] [[THIS_Y_2]] : $*Ref
     // CHECK:   end_borrow [[BORROWED_THIS]]
 
     // -- Then we create a box that we will use to perform a copy_addr into #Foo.x a bit later.
@@ -513,7 +509,7 @@ class Foo<T> {
 
     x = chi.intify()
   }
-  
+
   // CHECK-LABEL: sil hidden [ossa] @$s8lifetime3FooCfd : $@convention(method) <T> (@guaranteed Foo<T>) -> @owned Builtin.NativeObject
 
   deinit {
@@ -526,13 +522,19 @@ class Foo<T> {
     // CHECK-NOT: ref_element_addr [[THIS]] : {{.*}}, #Foo.x
     // -- destroy_value y
     // CHECK: [[YADDR:%[0-9]+]] = ref_element_addr [[THIS]] : {{.*}}, #Foo.y
-    // CHECK: destroy_addr [[YADDR]]
+    // CHECK: [[YADDR_ACCESS:%.*]] = begin_access [deinit] [static] [[YADDR]]
+    // CHECK: destroy_addr [[YADDR_ACCESS]]
+    // CHECK: end_access [[YADDR_ACCESS]]
     // -- destroy_value z
     // CHECK: [[ZADDR:%[0-9]+]] = ref_element_addr [[THIS]] : {{.*}}, #Foo.z
-    // CHECK: destroy_addr [[ZADDR]]
+    // CHECK: [[ZADDR_ACCESS:%.*]] = begin_access [deinit] [static] [[ZADDR]]
+    // CHECK: destroy_addr [[ZADDR_ACCESS]]
+    // CHECK: end_access [[ZADDR_ACCESS]]
     // -- destroy_value w
     // CHECK: [[WADDR:%[0-9]+]] = ref_element_addr [[THIS]] : {{.*}}, #Foo.w
-    // CHECK: destroy_addr [[WADDR]]
+    // CHECK: [[WADDR_ACCESS:%.*]] = begin_access [deinit] [static] [[WADDR]]
+    // CHECK: destroy_addr [[WADDR_ACCESS]]
+    // CHECK: end_access [[WADDR_ACCESS]]
     // -- return back this
     // CHECK: [[PTR:%.*]] = unchecked_ref_cast [[THIS]] : $Foo<T> to $Builtin.NativeObject
     // CHECK: [[PTR_OWNED:%.*]] = unchecked_ownership_conversion [[PTR]] : $Builtin.NativeObject, @guaranteed to @owned
@@ -567,7 +569,7 @@ class FooSubclass<T> : Foo<T> {
   // CHECK: [[BORROWED_PTR:%.*]] = begin_borrow [[PTR]]
   // CHECK: end_borrow [[BORROWED_PTR]]
   // CHECK: return [[PTR]]
-  
+
 
   deinit {
     bar()
@@ -586,18 +588,22 @@ class ImplicitDtor {
   // CHECK-NOT: ref_element_addr [[THIS]] : {{.*}}, #ImplicitDtor.x
   // -- destroy_value y
   // CHECK: [[YADDR:%[0-9]+]] = ref_element_addr [[THIS]] : {{.*}}, #ImplicitDtor.y
-  // CHECK: destroy_addr [[YADDR]]
+  // CHECK: [[YADDR_ACCESS:%.*]] = begin_access [deinit] [static] [[YADDR]]
+  // CHECK: destroy_addr [[YADDR_ACCESS]]
+  // CHECK: end_access [[YADDR_ACCESS]]
   // -- destroy_value w
   // CHECK: [[WADDR:%[0-9]+]] = ref_element_addr [[THIS]] : {{.*}}, #ImplicitDtor.w
-  // CHECK: destroy_addr [[WADDR]]
+  // CHECK: [[WADDR_ACCESS:%.*]] = begin_access [deinit] [static] [[WADDR]]
+  // CHECK: destroy_addr [[WADDR_ACCESS]]
+  // CHECK: end_access [[WADDR_ACCESS]]
   // CHECK: return
 }
 
 class ImplicitDtorDerived<T> : ImplicitDtor {
   var z:T
 
-  init(z : T) { 
-    super.init() 
+  init(z : T) {
+    super.init()
     self.z = z
   }
 
@@ -611,7 +617,9 @@ class ImplicitDtorDerived<T> : ImplicitDtor {
   // CHECK: [[BORROWED_PTR:%.*]] = begin_borrow [[PTR]]
   // CHECK: [[CAST_BORROWED_PTR:%.*]] = unchecked_ref_cast [[BORROWED_PTR]] : $Builtin.NativeObject to $ImplicitDtorDerived<T>
   // CHECK: [[ZADDR:%[0-9]+]] = ref_element_addr [[CAST_BORROWED_PTR]] : {{.*}}, #ImplicitDtorDerived.z
-  // CHECK: destroy_addr [[ZADDR]]
+  // CHECK: [[ZADDR_ACCESS:%.*]] = begin_access [deinit] [static] [[ZADDR]]
+  // CHECK: destroy_addr [[ZADDR_ACCESS]]
+  // CHECK: end_access [[ZADDR_ACCESS]]
   // CHECK: end_borrow [[BORROWED_PTR]]
   // -- epilog
   // CHECK-NOT: unchecked_ref_cast

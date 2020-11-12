@@ -8,12 +8,16 @@
 # See https://swift.org/LICENSE.txt for license information
 # See https://swift.org/CONTRIBUTORS.txt for the list of Swift project authors
 
+
+from __future__ import absolute_import, unicode_literals
+
 import os
 import platform
 import unittest
 from argparse import Namespace
 
-from swift_build_support.arguments import CompilerVersion
+from build_swift.build_swift.versions import Version
+
 from swift_build_support.cmake import CMake, CMakeOptions
 from swift_build_support.toolchain import host_toolchain
 
@@ -29,6 +33,15 @@ class CMakeTestCase(unittest.TestCase):
             executable = 'mock-distcc'
         return os.path.join(os.path.dirname(__file__), executable)
 
+    def mock_sccache_path(self):
+        """Return a path string of a mock sccache executable
+        """
+        if platform.system() == 'Windows':
+            executable = 'sccache.cmd'
+        else:
+            executable = 'sccache'
+        return os.path.join(os.path.dirname(__file__), executable)
+
     def default_args(self):
         """Return new args object with default values
         """
@@ -42,6 +55,7 @@ class CMakeTestCase(unittest.TestCase):
                          enable_sanitize_coverage=False,
                          export_compile_commands=False,
                          distcc=False,
+                         sccache=False,
                          cmake_generator="Ninja",
                          cmake_c_launcher=None,
                          cmake_cxx_launcher=None,
@@ -69,6 +83,8 @@ class CMakeTestCase(unittest.TestCase):
         toolchain.libtool = args.host_libtool
         if args.distcc:
             toolchain.distcc = self.mock_distcc_path()
+        if args.sccache:
+            toolchain.sccache = self.mock_sccache_path()
         toolchain.ninja = self.which_ninja(args)
         return CMake(args=args, toolchain=toolchain)
 
@@ -218,6 +234,20 @@ class CMakeTestCase(unittest.TestCase):
              "-DCMAKE_LIBTOOL:PATH=/path/to/libtool",
              "-DCMAKE_MAKE_PROGRAM=" + self.which_ninja(args)])
 
+    def test_common_options_sccache(self):
+        args = self.default_args()
+        args.sccache = True
+        cmake = self.cmake(args)
+        self.assertEqual(
+            list(cmake.common_options()),
+            ["-G", "Ninja",
+             "-DCMAKE_C_COMPILER_LAUNCHER:PATH=" + self.mock_sccache_path(),
+             "-DCMAKE_CXX_COMPILER_LAUNCHER:PATH=" + self.mock_sccache_path(),
+             "-DCMAKE_C_COMPILER:PATH=/path/to/clang",
+             "-DCMAKE_CXX_COMPILER:PATH=/path/to/clang++",
+             "-DCMAKE_LIBTOOL:PATH=/path/to/libtool",
+             "-DCMAKE_MAKE_PROGRAM=" + self.which_ninja(args)])
+
     def test_common_options_launcher(self):
         args = self.default_args()
         cmake_c_launcher = "/path/to/c_launcher"
@@ -250,9 +280,7 @@ class CMakeTestCase(unittest.TestCase):
 
     def test_common_options_clang_compiler_version(self):
         args = self.default_args()
-        args.clang_compiler_version = CompilerVersion(
-            string_representation="999.0.999",
-            components=("999", "0", "999", None))
+        args.clang_compiler_version = Version("999.0.999")
         cmake = self.cmake(args)
         self.assertEqual(
             list(cmake.common_options()),
@@ -264,9 +292,7 @@ class CMakeTestCase(unittest.TestCase):
 
     def test_common_options_clang_user_visible_version(self):
         args = self.default_args()
-        args.clang_user_visible_version = CompilerVersion(
-            string_representation="9.0.0",
-            components=("9", "0", "0", None))
+        args.clang_user_visible_version = Version("9.0.0")
         cmake = self.cmake(args)
         self.assertEqual(
             list(cmake.common_options()),
@@ -301,12 +327,8 @@ class CMakeTestCase(unittest.TestCase):
         args.export_compile_commands = True
         args.distcc = True
         args.cmake_generator = 'Xcode'
-        args.clang_user_visible_version = CompilerVersion(
-            string_representation="9.0.0",
-            components=("9", "0", "0", None))
-        args.clang_compiler_version = CompilerVersion(
-            string_representation="999.0.900",
-            components=("999", "0", "900", None))
+        args.clang_user_visible_version = Version("9.0.0")
+        args.clang_compiler_version = Version("999.0.900")
         args.build_ninja = True
         cmake = self.cmake(args)
         self.assertEqual(

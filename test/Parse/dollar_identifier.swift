@@ -70,3 +70,19 @@ func $declareWithDollar() { // expected-error{{cannot declare entity named '$dec
     $a: Int, // expected-error{{cannot declare entity named '$a'}}
     $b c: Int) { } // expected-error{{cannot declare entity named '$b'}}
 }
+
+// SR-13232
+@propertyWrapper
+struct Wrapper {
+  var wrappedValue: Int
+  var projectedValue: String { String(wrappedValue) }
+}
+
+struct S {
+  @Wrapper var café = 42
+}
+
+let _ = S().$café // Okay
+
+infix operator $ // expected-error{{'$' is considered an identifier and must not appear within an operator name}} // SR-13092
+infix operator `$` // expected-error{{'$' is considered an identifier and must not appear within an operator name}} // SR-13092

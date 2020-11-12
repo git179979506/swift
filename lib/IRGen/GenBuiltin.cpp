@@ -28,6 +28,7 @@
 #include "Explosion.h"
 #include "GenCall.h"
 #include "GenCast.h"
+#include "GenPointerAuth.h"
 #include "GenIntegerLiteral.h"
 #include "IRGenFunction.h"
 #include "IRGenModule.h"
@@ -121,6 +122,13 @@ void irgen::emitBuiltinCall(IRGenFunction &IGF, const BuiltinInfo &Builtin,
                             Identifier FnId, SILType resultType,
                             Explosion &args, Explosion &out,
                             SubstitutionMap substitutions) {
+  if (Builtin.ID == BuiltinValueKind::COWBufferForReading) {
+    // Just forward the incoming argument.
+    assert(args.size() == 1 && "Expecting one incoming argument");
+    out = std::move(args);
+    return;
+  }
+
   if (Builtin.ID == BuiltinValueKind::UnsafeGuaranteedEnd) {
     // Just consume the incoming argument.
     assert(args.size() == 1 && "Expecting one incoming argument");
@@ -203,7 +211,43 @@ void irgen::emitBuiltinCall(IRGenFunction &IGF, const BuiltinInfo &Builtin,
     return;
   }
 
+  // getCurrentAsyncTask has no arguments.
+  if (Builtin.ID == BuiltinValueKind::GetCurrentAsyncTask) {
+    auto task = IGF.getAsyncTask();
+    out.add(IGF.Builder.CreateBitCast(task, IGF.IGM.RefCountedPtrTy));
+    return;
+  }
+
   // Everything else cares about the (rvalue) argument.
+
+  if (Builtin.ID == BuiltinValueKind::CancelAsyncTask) {
+    emitTaskCancel(IGF, args.claimNext());
+    return;
+  }
+
+  if (Builtin.ID == BuiltinValueKind::CreateAsyncTask) {
+    auto flags = args.claimNext();
+    auto parentTask = args.claimNext();
+    auto taskFunction = args.claimNext();
+    auto taskContext = args.claimNext();
+
+    // FIXME: SIL treats the function/context parameter as "guaranteed", but
+    // the runtime entry point assumes it is owned. Introduce an extra retain
+    // of the context to balance things out.
+    IGF.emitNativeStrongRetain(taskContext, IGF.getDefaultAtomicity());
+
+    auto newTaskAndContext = emitTaskCreate(
+        IGF, flags, parentTask, taskFunction, taskContext);
+
+    // Cast back to NativeObject/RawPointer.
+    auto newTask = IGF.Builder.CreateExtractValue(newTaskAndContext, { 0 });
+    newTask = IGF.Builder.CreateBitCast(newTask, IGF.IGM.RefCountedPtrTy);
+    auto newContext = IGF.Builder.CreateExtractValue(newTaskAndContext, { 1 });
+    newContext = IGF.Builder.CreateBitCast(newContext, IGF.IGM.Int8PtrTy);
+    out.add(newTask);
+    out.add(newContext);
+    return;
+  }
 
   // If this is an LLVM IR intrinsic, lower it to an intrinsic call.
   const IntrinsicInfo &IInfo = IGF.getSILModule().getIntrinsicInfo(FnId);
@@ -265,6 +309,25 @@ void irgen::emitBuiltinCall(IRGenFunction &IGF, const BuiltinInfo &Builtin,
     args = std::move(replacement);
   }
 
+  // Implement the ptrauth builtins as no-ops when the Clang
+  // intrinsics are disabled.
+  if ((IID == llvm::Intrinsic::ptrauth_sign ||
+       IID == llvm::Intrinsic::ptrauth_auth ||
+       IID == llvm::Intrinsic::ptrauth_resign ||
+       IID == llvm::Intrinsic::ptrauth_strip) &&
+      !IGF.IGM.getClangASTContext().getLangOpts().PointerAuthIntrinsics) {
+    out.add(args.claimNext()); // Return the input pointer.
+    (void) args.claimNext();   // Ignore the key.
+    if (IID != llvm::Intrinsic::ptrauth_strip) {
+      (void) args.claimNext(); // Ignore the discriminator.
+    }
+    if (IID == llvm::Intrinsic::ptrauth_resign) {
+      (void) args.claimNext(); // Ignore the new key.
+      (void) args.claimNext(); // Ignore the new discriminator.
+    }
+    return;
+  }
+
   if (IID != llvm::Intrinsic::not_intrinsic) {
     SmallVector<llvm::Type*, 4> ArgTys;
     for (auto T : IInfo.Types)
@@ -313,7 +376,7 @@ void irgen::emitBuiltinCall(IRGenFunction &IGF, const BuiltinInfo &Builtin,
     llvm::Value *v = IGF.Builder.Create##id(lhs, rhs);                         \
     return out.add(v);                                                         \
   }
-#define BUILTIN_BINARY_OPERATION_POLYMORPHIC(id, name, attrs)                  \
+#define BUILTIN_BINARY_OPERATION_POLYMORPHIC(id, name)                         \
   if (Builtin.ID == BuiltinValueKind::id) {                                    \
     /* This builtin must be guarded so that dynamically it is never called. */ \
     IGF.emitTrap("invalid use of polymorphic builtin", /*Unreachable*/ false); \
@@ -381,10 +444,10 @@ if (Builtin.ID == BuiltinValueKind::id) { \
   
     auto *fn = cast<llvm::Function>(IGF.IGM.getWillThrowFn());
     auto error = args.claimNext();
-    auto errorBuffer = IGF.getErrorResultSlot(
-               SILType::getPrimitiveObjectType(IGF.IGM.Context.getErrorDecl()
-                                                  ->getDeclaredType()
-                                                  ->getCanonicalType()));
+    auto errorBuffer = IGF.getCalleeErrorResultSlot(
+        SILType::getPrimitiveObjectType(IGF.IGM.Context.getErrorDecl()
+                                            ->getDeclaredInterfaceType()
+                                            ->getCanonicalType()));
     IGF.Builder.CreateStore(error, errorBuffer);
     
     auto context = llvm::UndefValue::get(IGF.IGM.Int8PtrTy);
@@ -417,7 +480,7 @@ if (Builtin.ID == BuiltinValueKind::id) { \
   if (Builtin.ID == BuiltinValueKind::AssumeTrue) {
     llvm::Value *v = args.claimNext();
     if (v->getType() == IGF.IGM.Int1Ty) {
-      IGF.Builder.CreateIntrinsicCall(llvm::Intrinsic::ID::assume, v);
+      IGF.Builder.CreateIntrinsicCall(llvm::Intrinsic::assume, v);
     }
     return;
   }
@@ -518,15 +581,15 @@ if (Builtin.ID == BuiltinValueKind::id) { \
     bool isWeak = false, isVolatile = false, isSingleThread = false;
     if (NextPart != Parts.end() && *NextPart == "weak") {
       isWeak = true;
-      NextPart++;
+      ++NextPart;
     }
     if (NextPart != Parts.end() && *NextPart == "volatile") {
       isVolatile = true;
-      NextPart++;
+      ++NextPart;
     }
     if (NextPart != Parts.end() && *NextPart == "singlethread") {
       isSingleThread = true;
-      NextPart++;
+      ++NextPart;
     }
     assert(NextPart == Parts.end() && "Mismatch with sema");
 
@@ -656,7 +719,7 @@ if (Builtin.ID == BuiltinValueKind::id) { \
     // If the type is floating-point, then we need to bitcast to integer.
     auto valueTy = origValueTy;
     if (valueTy->isFloatingPointTy()) {
-      valueTy = llvm::IntegerType::get(IGF.IGM.LLVMContext,
+      valueTy = llvm::IntegerType::get(IGF.IGM.getLLVMContext(),
                                        valueTy->getPrimitiveSizeInBits());
     }
 
@@ -1012,11 +1075,23 @@ if (Builtin.ID == BuiltinValueKind::id) { \
                                /*constant*/ false,
                                llvm::GlobalValue::PrivateLinkage,
                                llvm::ConstantAggregateZero::get(flagStorageTy));
-    flag->setAlignment(IGF.IGM.getAtomicBoolAlignment().getValue());
+    flag->setAlignment(
+        llvm::MaybeAlign(IGF.IGM.getAtomicBoolAlignment().getValue()));
     entrypointArgs[6] = llvm::ConstantExpr::getBitCast(flag, IGF.IGM.Int8PtrTy);
 
     IGF.Builder.CreateCall(IGF.IGM.getSwift3ImplicitObjCEntrypointFn(),
                            entrypointArgs);
+    return;
+  }
+  
+  if (Builtin.ID == BuiltinValueKind::TypePtrAuthDiscriminator) {
+    (void)args.claimAll();
+    Type valueTy = substitutions.getReplacementTypes()[0];
+    
+    // The type should lower statically to a SILFunctionType.
+    auto loweredTy = IGF.IGM.getLoweredType(valueTy).castTo<SILFunctionType>();
+    
+    out.add(PointerAuthEntity(loweredTy).getTypeDiscriminator(IGF.IGM));
     return;
   }
 

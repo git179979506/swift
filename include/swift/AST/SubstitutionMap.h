@@ -52,11 +52,10 @@ enum class CombineSubstitutionMaps {
 /// any entity that can reference type parameters, e.g., types (via
 /// Type::subst()) and conformances (via ProtocolConformanceRef::subst()).
 ///
-/// SubstitutionMaps are constructed by calling the getSubstitutionMap() method
-/// on a GenericSignature or (equivalently) by calling one of the static
-/// \c SubstitutionMap::get() methods. However, most substitution maps are
+/// SubstitutionMaps are constructed by calling the an overload of the static
+/// method \c SubstitutionMap::get(). However, most substitution maps are
 /// computed using higher-level entry points such as
-/// TypeBase::getMemberSubstitutionMap().
+/// TypeBase::getContextSubstitutionMap().
 ///
 /// Substitution maps are ASTContext-allocated and are uniqued on construction,
 /// so they can be used as fields in AST nodes.
@@ -150,6 +149,10 @@ public:
   /// Retrieve the array of replacement types, which line up with the
   /// generic parameters.
   ArrayRef<Type> getReplacementTypes() const;
+
+  /// Retrieve the array of replacement types for the innermost generic
+  /// parameters.
+  ArrayRef<Type> getInnermostReplacementTypes() const;
 
   /// Query whether any replacement types in the map contain archetypes.
   bool hasArchetypes() const;
@@ -282,6 +285,12 @@ private:
   /// instead, since that will resolve member types also.
   Type lookupSubstitution(CanSubstitutableType type) const;
 };
+
+inline llvm::raw_ostream &operator<<(llvm::raw_ostream &OS,
+                                     const SubstitutionMap &subs) {
+  subs.dump(OS);
+  return OS;
+}
 
 /// A function object suitable for use as a \c TypeSubstitutionFn that
 /// queries an underlying \c SubstitutionMap.

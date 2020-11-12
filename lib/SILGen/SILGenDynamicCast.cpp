@@ -185,7 +185,7 @@ namespace {
           // argument.
           ManagedValue argument;
           if (!shouldTakeOnSuccess(consumption)) {
-            argument = SGF.B.createGuaranteedPhiArgument(
+            argument = SGF.B.createGuaranteedTransformingTerminatorArgument(
                 origTargetTL.getLoweredType());
           } else {
             argument =
@@ -236,7 +236,8 @@ namespace {
         switch (consumption) {
         case CastConsumptionKind::BorrowAlways:
         case CastConsumptionKind::CopyOnSuccess:
-          SGF.B.createGuaranteedPhiArgument(operandValue.getType());
+          SGF.B.createGuaranteedTransformingTerminatorArgument(
+              operandValue.getType());
           handleFalse(None);
           break;
         case CastConsumptionKind::TakeAlways:
@@ -540,7 +541,7 @@ RValue Lowering::emitConditionalCheckedCast(
     result = SGF.manageBufferForExprResult(resultBuffer, resultTL, C);
   } else {
     auto argument = contBlock->createPhiArgument(resultTL.getLoweredType(),
-                                                 ValueOwnershipKind::Owned);
+                                                 OwnershipKind::Owned);
     result = SGF.emitManagedRValueWithCleanup(argument, resultTL);
   }
 
@@ -592,7 +593,7 @@ SILValue Lowering::emitIsa(SILGenFunction &SGF, SILLocation loc,
       });
 
   auto contBB = scope.exit();
-  auto isa = contBB->createPhiArgument(i1Ty, ValueOwnershipKind::None);
+  auto isa = contBB->createPhiArgument(i1Ty, OwnershipKind::None);
   return isa;
 }
 

@@ -81,14 +81,20 @@ static SILBasicBlock *cloneEdge(TermInst *TI, unsigned SuccIndex) {
 }
 
 // A utility function for cloning the apply instruction.
-static FullApplySite CloneApply(FullApplySite AI, SILBuilder &Builder) {
+static FullApplySite CloneApply(FullApplySite AI, SILValue SelfArg,
+                                SILBuilder &Builder) {
   // Clone the Apply.
   Builder.setCurrentDebugScope(AI.getDebugScope());
   Builder.addOpenedArchetypeOperands(AI.getInstruction());
   auto Args = AI.getArguments();
   SmallVector<SILValue, 8> Ret(Args.size());
-  for (unsigned i = 0, e = Args.size(); i != e; ++i)
-    Ret[i] = Args[i];
+  for (unsigned i = 0, e = Args.size(); i != e; ++i) {
+    if (i == e - 1 && SelfArg) {
+      Ret[i] = SelfArg;
+    } else {
+      Ret[i] = Args[i];
+    }
+  }
 
   FullApplySite NAI;
 
@@ -145,9 +151,8 @@ static FullApplySite speculateMonomorphicTarget(FullApplySite AI,
   SILBasicBlock *Iden = F->createBasicBlock();
   // Virt is the block containing the slow virtual call.
   SILBasicBlock *Virt = F->createBasicBlock();
-  Iden->createPhiArgument(
-      SILType::getPrimitiveObjectType(SubType),
-      ValueOwnershipKind::Owned);
+  Iden->createPhiArgument(SILType::getPrimitiveObjectType(SubType),
+                          OwnershipKind::Owned);
 
   SILBasicBlock *Continue = Entry->split(It);
 
@@ -169,8 +174,8 @@ static FullApplySite speculateMonomorphicTarget(FullApplySite AI,
   SILValue DownCastedClassInstance = Iden->getArgument(0);
 
   // Copy the two apply instructions into the two blocks.
-  FullApplySite IdenAI = CloneApply(AI, IdenBuilder);
-  FullApplySite VirtAI = CloneApply(AI, VirtBuilder);
+  FullApplySite IdenAI = CloneApply(AI, DownCastedClassInstance, IdenBuilder);
+  FullApplySite VirtAI = CloneApply(AI, SILValue(), VirtBuilder);
 
   // See if Continue has a release on self as the instruction right after the
   // apply. If it exists, move it into position in the diamond.
@@ -189,9 +194,10 @@ static FullApplySite speculateMonomorphicTarget(FullApplySite AI,
   // Create a PHInode for returning the return value from both apply
   // instructions.
   SILArgument *Arg =
-      Continue->createPhiArgument(AI.getType(), ValueOwnershipKind::Owned);
+      Continue->createPhiArgument(AI.getType(), OwnershipKind::Owned);
   if (!isa<TryApplyInst>(AI)) {
-    if (AI.getSubstCalleeType()->isNoReturnFunction(F->getModule())) {
+    if (AI.getSubstCalleeType()->isNoReturnFunction(
+            F->getModule(), AI.getFunction()->getTypeExpansionContext())) {
       IdenBuilder.createUnreachable(AI.getLoc());
       VirtBuilder.createUnreachable(AI.getLoc());
     } else {
@@ -219,11 +225,12 @@ static FullApplySite speculateMonomorphicTarget(FullApplySite AI,
   }
 
   // Update the stats.
-  NumTargetsPredicted++;
+  ++NumTargetsPredicted;
 
   // Devirtualize the apply instruction on the identical path.
   auto NewInst =
-    devirtualizeClassMethod(IdenAI, DownCastedClassInstance, CD, nullptr);
+      devirtualizeClassMethod(IdenAI, DownCastedClassInstance, CD, nullptr)
+          .first;
   assert(NewInst && "Expected to be able to devirtualize apply!");
   (void)NewInst;
 
@@ -233,14 +240,14 @@ static FullApplySite speculateMonomorphicTarget(FullApplySite AI,
   if (auto *TAI = dyn_cast<TryApplyInst>(VirtAI)) {
     auto *ErrorBB = TAI->getFunction()->createBasicBlock();
     ErrorBB->createPhiArgument(TAI->getErrorBB()->getArgument(0)->getType(),
-                               ValueOwnershipKind::Owned);
+                               OwnershipKind::Owned);
     Builder.setInsertionPoint(ErrorBB);
     Builder.createBranch(TAI->getLoc(), TAI->getErrorBB(),
                          {ErrorBB->getArgument(0)});
 
     auto *NormalBB = TAI->getFunction()->createBasicBlock();
     NormalBB->createPhiArgument(TAI->getNormalBB()->getArgument(0)->getType(),
-                                ValueOwnershipKind::Owned);
+                                OwnershipKind::Owned);
     Builder.setInsertionPoint(NormalBB);
     Builder.createBranch(TAI->getLoc(), TAI->getNormalBB(),
                          {NormalBB->getArgument(0)});
@@ -277,8 +284,6 @@ static bool isDefaultCaseKnown(ClassHierarchyAnalysis *CHA,
   auto *Method = CMI->getMember().getAbstractFunctionDecl();
   assert(Method && "not a function");
 
-  const DeclContext *DC = AI.getModule().getAssociatedContext();
-
   if (CD->isFinal())
     return true;
 
@@ -287,13 +292,8 @@ static bool isDefaultCaseKnown(ClassHierarchyAnalysis *CHA,
   if (CD->checkAncestry(AncestryFlags::ObjC))
     return false;
 
-  // Without an associated context we cannot perform any
-  // access-based optimizations.
-  if (!DC)
-    return false;
-
   // Only handle classes defined within the SILModule's associated context.
-  if (!CD->isChildContextOf(DC))
+  if (!CD->isChildContextOf(AI.getModule().getAssociatedContext()))
     return false;
 
   if (!CD->hasAccess())
@@ -379,7 +379,7 @@ static bool tryToSpeculateTarget(FullApplySite AI, ClassHierarchyAnalysis *CHA,
             dyn_cast<BuiltinInst>(TupleExtract->getOperand()))
       if (UnsafeGuaranteedSelf->getBuiltinKind() ==
               BuiltinValueKind::UnsafeGuaranteed &&
-          TupleExtract->getFieldNo() == 0)
+          TupleExtract->getFieldIndex() == 0)
         return false;
 
   // Strip any upcasts off of our 'self' value, potentially leaving us
@@ -408,7 +408,8 @@ static bool tryToSpeculateTarget(FullApplySite AI, ClassHierarchyAnalysis *CHA,
     // try to devirtualize it completely.
     ClassHierarchyAnalysis::ClassList Subs;
     if (isDefaultCaseKnown(CHA, AI, CD, Subs)) {
-      auto NewInst = tryDevirtualizeClassMethod(AI, SubTypeValue, CD, &ORE);
+      auto NewInst =
+          tryDevirtualizeClassMethod(AI, SubTypeValue, CD, &ORE).first;
       if (NewInst)
         deleteDevirtualizedApply(AI);
       return bool(NewInst);
@@ -500,7 +501,7 @@ static bool tryToSpeculateTarget(FullApplySite AI, ClassHierarchyAnalysis *CHA,
 
     // FIXME: Add support for generic subclasses.
     if (S->isGenericContext()) {
-      NotHandledSubsNum++;
+      ++NotHandledSubsNum;
       continue;
     }
 
@@ -515,7 +516,7 @@ static bool tryToSpeculateTarget(FullApplySite AI, ClassHierarchyAnalysis *CHA,
     // Pass the metatype of the subclass.
     auto NewAI = speculateMonomorphicTarget(AI, ClassOrMetatypeType, S, LastCCBI);
     if (!NewAI) {
-      NotHandledSubsNum++;
+      ++NotHandledSubsNum;
       continue;
     }
     AI = NewAI;
@@ -560,15 +561,16 @@ static bool tryToSpeculateTarget(FullApplySite AI, ClassHierarchyAnalysis *CHA,
   if (LastCCBI && SubTypeValue == LastCCBI->getOperand()) {
     // Remove last checked_cast_br, because it will always succeed.
     SILBuilderWithScope B(LastCCBI);
-    auto CastedValue = B.createUncheckedBitCast(LastCCBI->getLoc(),
-                                                LastCCBI->getOperand(),
-                                                LastCCBI->getTargetLoweredType());
+    auto CastedValue = B.createUncheckedReinterpretCast(
+        LastCCBI->getLoc(), LastCCBI->getOperand(),
+        LastCCBI->getTargetLoweredType());
     B.createBranch(LastCCBI->getLoc(), LastCCBI->getSuccessBB(), {CastedValue});
     LastCCBI->eraseFromParent();
     ORE.emit(RB);
     return true;
   }
-  auto NewInst = tryDevirtualizeClassMethod(AI, SubTypeValue, CD, nullptr);
+  auto NewInst =
+      tryDevirtualizeClassMethod(AI, SubTypeValue, CD, nullptr).first;
   if (NewInst) {
     ORE.emit(RB);
     deleteDevirtualizedApply(AI);
@@ -590,6 +592,7 @@ namespace {
     void run() override {
 
       auto &CurFn = *getFunction();
+
       // Don't perform speculative devirtualization at -Os.
       if (CurFn.optimizeForSize())
         return;
@@ -612,12 +615,14 @@ namespace {
         }
       }
 
-      OptRemark::Emitter ORE(DEBUG_TYPE, CurFn.getModule());
+      OptRemark::Emitter ORE(DEBUG_TYPE, CurFn);
       // Go over the collected calls and try to insert speculative calls.
       for (auto AI : ToSpecialize)
         Changed |= tryToSpeculateTarget(AI, CHA, ORE);
 
       if (Changed) {
+        CurFn.getModule().linkFunction(&CurFn, SILModule::LinkingMode::LinkAll);
+
         invalidateAnalysis(SILAnalysis::InvalidationKind::FunctionBody);
       }
     }

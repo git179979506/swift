@@ -20,7 +20,6 @@
 #include "swift/Driver/Action.h"
 #include "swift/Driver/Util.h"
 #include "llvm/ADT/ArrayRef.h"
-#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/PointerIntPair.h"
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/SmallVector.h"
@@ -150,6 +149,9 @@ class CommandOutput {
 public:
   CommandOutput(file_types::ID PrimaryOutputType, OutputFileMap &Derived);
 
+  /// For testing dependency graphs that use Jobs
+  CommandOutput(StringRef dummyBaseName, OutputFileMap &);
+
   /// Return the primary output type for this CommandOutput.
   file_types::ID getPrimaryOutputType() const;
 
@@ -193,6 +195,11 @@ public:
   /// the _additional_ (not primary) output of type \p type associated with the
   /// first primary input.
   StringRef getAdditionalOutputForType(file_types::ID type) const;
+
+  /// Assuming (and asserting) that there are one or more input pairs, return true if there exists
+  /// an _additional_ (not primary) output of type \p type associated with the
+  /// first primary input.
+  bool hasAdditionalOutputForType(file_types::ID type) const;
 
   /// Return a vector of additional (not primary) outputs of type \p type
   /// associated with the primary inputs.
@@ -301,6 +308,23 @@ private:
   /// The modification time of the main input file, if any.
   llvm::sys::TimePoint<> InputModTime = llvm::sys::TimePoint<>::max();
 
+#ifndef NDEBUG
+  /// The "wave" of incremental jobs that this \c Job was scheduled into.
+  ///
+  /// The first "wave" of jobs is computed by the driver from the set of inputs
+  /// and external files that have been mutated by the user. From there, as
+  /// jobs from the first wave finish executing, we reload their \c swiftdeps
+  /// files and re-integrate them into the dependency graph to discover
+  /// the jobs for the second "wave".
+  ///
+  /// In +asserts builds, we ensure that no more than two "waves" occur for
+  /// any given incremental compilation session. This is a consequence of
+  /// 1) transitivity in dependency arcs
+  /// 2) dependency tracing from uses that affect a def's interfaces to that
+  ///    def's uses.
+  mutable unsigned Wave = 1;
+#endif
+
 public:
   Job(const JobAction &Source, SmallVectorImpl<const Job *> &&Inputs,
       std::unique_ptr<CommandOutput> Output, const char *Executable,
@@ -313,6 +337,12 @@ public:
         Executable(Executable), Arguments(std::move(Arguments)),
         ExtraEnvironment(std::move(ExtraEnvironment)),
         FilelistFileInfos(std::move(Infos)), ResponseFile(ResponseFile) {}
+
+  /// For testing dependency graphs that use Jobs
+  Job(OutputFileMap &OFM, StringRef dummyBaseName)
+      : Job(CompileJobAction(file_types::TY_Object),
+            SmallVector<const Job *, 4>(),
+            std::make_unique<CommandOutput>(dummyBaseName, OFM), nullptr, {}) {}
 
   virtual ~Job();
 
@@ -386,6 +416,11 @@ public:
   /// Assumes that, if a compile job, has one primary swift input
   /// May return empty if none.
   StringRef getFirstSwiftPrimaryInput() const;
+
+#ifndef NDEBUG
+  unsigned getWave() const { return Wave; }
+  void setWave(unsigned WaveNum) const { Wave = WaveNum; }
+#endif
 };
 
 /// A BatchJob comprises a _set_ of jobs, each of which is sufficiently similar

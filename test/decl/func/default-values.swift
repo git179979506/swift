@@ -20,7 +20,7 @@ func tupleTypes() {
   typealias ta1 = (a : Int = ()) // expected-error{{default argument not permitted in a tuple type}}{{28-32=}}
   // expected-error @-1{{cannot create a single-element tuple with an element label}}{{20-24=}}
   var c1 : (a : Int, b : Int, c : Int = 3, // expected-error{{default argument not permitted in a tuple type}}{{39-42=}}
-            d = 4) = (1, 2, 3, 4) // expected-error{{default argument not permitted in a tuple type}}{{15-18=}} expected-error{{use of undeclared type 'd'}}
+            d = 4) = (1, 2, 3, 4) // expected-error{{default argument not permitted in a tuple type}}{{15-18=}} expected-error{{cannot find type 'd' in scope}}
 }
 
 func returnWithDefault() -> (a: Int, b: Int = 42) { // expected-error{{default argument not permitted in a tuple type}} {{45-49=}}
@@ -61,7 +61,7 @@ vi.g(i: 12)
 vi.g(f:12.5)
 
 // <rdar://problem/14564964> crash on invalid
-func foo(_ x: WonkaWibble = 17) { } // expected-error{{use of undeclared type 'WonkaWibble'}}
+func foo(_ x: WonkaWibble = 17) { } // expected-error{{cannot find type 'WonkaWibble' in scope}}
 
 // Default arguments for initializers.
 class SomeClass2 { 
@@ -73,7 +73,7 @@ class SomeDerivedClass2 : SomeClass2 {
   }
 }
 
-func shouldNotCrash(_ a : UndefinedType, bar b : Bool = true) { // expected-error {{use of undeclared type 'UndefinedType'}}
+func shouldNotCrash(_ a : UndefinedType, bar b : Bool = true) { // expected-error {{cannot find type 'UndefinedType' in scope}}
 }
 
 // <rdar://problem/20749423> Compiler crashed while building simple subclass
@@ -92,7 +92,7 @@ defaultArgTuplesNotMaterializable(identity(5))
 
 // <rdar://problem/22333090> QoI: Propagate contextual information in a call to operands
 defaultArgTuplesNotMaterializable(identity((5, y: 10)))
-// expected-error@-1 {{cannot convert value of type '(Int, y: Int)' to expected argument type 'Int'}}
+// expected-error@-1 {{conflicting arguments to generic parameter 'T' ('(Int, y: Int)' vs. 'Int')}}
 
 
 // rdar://problem/21799331

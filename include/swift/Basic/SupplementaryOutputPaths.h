@@ -14,7 +14,6 @@
 #define SWIFT_FRONTEND_SUPPLEMENTARYOUTPUTPATHS_H
 
 #include "swift/Basic/LLVM.h"
-#include "llvm/ADT/Optional.h"
 
 #include <string>
 
@@ -36,7 +35,7 @@ struct SupplementaryOutputPaths {
   ///
   /// This binary format is used to describe the interface of a module when
   /// imported by client source code. The swiftmodule format is described in
-  /// docs/Serialization.rst.
+  /// docs/Serialization.md.
   ///
   /// \sa swift::serialize
   std::string ModuleOutputPath;
@@ -77,7 +76,7 @@ struct SupplementaryOutputPaths {
   /// visibility" within a module, that becomes very important for any sort of
   /// incremental build. These files are consumed by the Swift driver to decide
   /// whether a source file needs to be recompiled during a build. See
-  /// docs/DependencyAnalysis.rst for more information.
+  /// docs/DependencyAnalysis.md for more information.
   ///
   /// \sa swift::emitReferenceDependencies
   /// \sa DependencyGraph
@@ -149,6 +148,26 @@ struct SupplementaryOutputPaths {
   /// \sa swift::emitSwiftInterface
   std::string ModuleInterfaceOutputPath;
 
+  /// The path to which we should emit a private module interface.
+  ///
+  /// The private module interface contains all SPI decls and attributes.
+  ///
+  /// \sa ModuleInterfaceOutputPath
+  std::string PrivateModuleInterfaceOutputPath;
+
+  /// The path to a .c file where we should declare $ld$add symbols for those
+  /// symbols moved to the current module.
+  /// When symbols are moved to this module, this module declares them as HIDE
+  /// for the OS versions prior to when the move happened. On the other hand, the
+  /// original module should ADD them for these OS versions. An executable
+  /// can choose the right library to link against depending on the deployment target.
+  /// This is a walk-around that linker directives cannot specify other install
+  /// name per symbol, we should eventually remove this.
+  std::string LdAddCFilePath;
+
+  /// The path to which we should emit module summary file.
+  std::string ModuleSummaryOutputPath;
+
   SupplementaryOutputPaths() = default;
   SupplementaryOutputPaths(const SupplementaryOutputPaths &) = default;
 
@@ -158,7 +177,7 @@ struct SupplementaryOutputPaths {
            ReferenceDependenciesFilePath.empty() &&
            SerializedDiagnosticsPath.empty() && LoadedModuleTracePath.empty() &&
            TBDPath.empty() && ModuleInterfaceOutputPath.empty() &&
-           ModuleSourceInfoOutputPath.empty();
+           ModuleSourceInfoOutputPath.empty() && LdAddCFilePath.empty();
   }
 };
 } // namespace swift

@@ -1,4 +1,4 @@
-// RUN: %target-typecheck-verify-swift -enable-invalid-ephemeralness-as-error
+// RUN: %target-typecheck-verify-swift -enable-invalid-ephemeralness-as-error -disable-objc-interop
 
 // Test availability attributes on UnsafePointer initializers.
 // Assume the original source contains no UnsafeRawPointer types.
@@ -67,8 +67,8 @@ func unsafePointerConversionAvailability(
   _ = UnsafeMutablePointer<Void>(umpi) // expected-warning {{UnsafeMutablePointer<Void> has been replaced by UnsafeMutableRawPointer}}
   _ = UnsafeMutablePointer<Void>(umps) // expected-warning {{UnsafeMutablePointer<Void> has been replaced by UnsafeMutableRawPointer}}
 
-  _ = UnsafePointer<Void>(rp)  // expected-error {{cannot convert value of type 'UnsafeRawPointer' to expected argument type 'Builtin.RawPointer'}} expected-warning {{UnsafePointer<Void> has been replaced by UnsafeRawPointer}}
-  _ = UnsafePointer<Void>(mrp) // expected-error {{cannot convert value of type 'UnsafeMutableRawPointer' to expected argument type 'Builtin.RawPointer'}} expected-warning {{UnsafePointer<Void> has been replaced by UnsafeRawPointer}}
+  _ = UnsafePointer<Void>(rp)  // expected-error {{no exact matches in call to initializer}} expected-warning {{UnsafePointer<Void> has been replaced by UnsafeRawPointer}}
+  _ = UnsafePointer<Void>(mrp) // expected-error {{no exact matches in call to initializer}} expected-warning {{UnsafePointer<Void> has been replaced by UnsafeRawPointer}}
   _ = UnsafePointer<Void>(umpv) // expected-warning {{UnsafePointer<Void> has been replaced by UnsafeRawPointer}}
   _ = UnsafePointer<Void>(upv) // expected-warning {{UnsafePointer<Void> has been replaced by UnsafeRawPointer}}
   _ = UnsafePointer<Void>(umpi) // expected-warning {{UnsafePointer<Void> has been replaced by UnsafeRawPointer}}
@@ -81,10 +81,10 @@ func unsafePointerConversionAvailability(
   _ = UnsafeMutablePointer<Int>(orp) // expected-error {{no exact matches in call to initializer}}
   _ = UnsafeMutablePointer<Int>(omrp) // expected-error {{no exact matches in call to initializer}}
 
-  _ = UnsafePointer<Int>(rp)  // expected-error {{cannot convert value of type 'UnsafeRawPointer' to expected argument type 'Builtin.RawPointer'}}
-  _ = UnsafePointer<Int>(mrp) // expected-error {{cannot convert value of type 'UnsafeMutableRawPointer' to expected argument type 'Builtin.RawPointer'}}
-  _ = UnsafePointer<Int>(orp)  // expected-error {{cannot convert value of type 'UnsafeRawPointer?' to expected argument type 'Builtin.RawPointer'}}
-  _ = UnsafePointer<Int>(omrp) // expected-error {{cannot convert value of type 'UnsafeMutableRawPointer?' to expected argument type 'Builtin.RawPointer'}}
+  _ = UnsafePointer<Int>(rp)  // expected-error {{no exact matches in call to initializer}}
+  _ = UnsafePointer<Int>(mrp) // expected-error {{no exact matches in call to initializer}}
+  _ = UnsafePointer<Int>(orp)  // expected-error {{no exact matches in call to initializer}}
+  _ = UnsafePointer<Int>(omrp) // expected-error {{no exact matches in call to initializer}}
 
   _ = UnsafePointer<Int>(ups) // expected-error {{cannot convert value of type 'UnsafePointer<String>' to expected argument type 'UnsafePointer<Int>'}}
   // expected-note@-1 {{arguments to generic parameter 'Pointee' ('String' and 'Int') are expected to be equal}}
@@ -131,7 +131,7 @@ struct SR9800 {
   func foo(_: UnsafePointer<UInt8>) {}
 
   func ambiguityTest(buf: UnsafeMutablePointer<CChar>) {
-    _ = foo(UnsafePointer(buf)) // this call should be unambiguoius
+    foo(UnsafePointer(buf)) // this call should be unambiguoius
   }
 }
 

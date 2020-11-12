@@ -27,8 +27,6 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/FoldingSet.h"
-#include "llvm/ADT/SmallPtrSet.h"
-#include "llvm/ADT/TinyPtrVector.h"
 #include <utility>
 
 namespace swift {
@@ -285,7 +283,7 @@ public:
 
   // Make vanilla new/delete illegal for protocol conformances.
   void *operator new(size_t bytes) = delete;
-  void operator delete(void *data) SWIFT_DELETE_OPERATOR_DELETED;
+  void operator delete(void *data) = delete;
 
   // Only allow allocation of protocol conformances using the allocator in
   // ASTContext or by doing a placement new.
@@ -467,21 +465,22 @@ class NormalProtocolConformance : public RootProtocolConformance,
   uint64_t LoaderContextData;
   friend class ASTContext;
 
-  NormalProtocolConformance(Type conformingType, ProtocolDecl *protocol,
-                            SourceLoc loc, DeclContext *dc,
-                            ProtocolConformanceState state)
-    : RootProtocolConformance(ProtocolConformanceKind::Normal, conformingType),
-      ProtocolAndState(protocol, state), Loc(loc), ContextAndInvalid(dc, false)
-  {
-    assert(!conformingType->hasArchetype() &&
-           "ProtocolConformances should store interface types");
-  }
-
   void resolveLazyInfo() const;
 
   void differenceAndStoreConditionalRequirements() const;
 
 public:
+  NormalProtocolConformance(Type conformingType, ProtocolDecl *protocol,
+                            SourceLoc loc, DeclContext *dc,
+                            ProtocolConformanceState state)
+      : RootProtocolConformance(ProtocolConformanceKind::Normal,
+                                conformingType),
+        ProtocolAndState(protocol, state), Loc(loc),
+        ContextAndInvalid(dc, false) {
+    assert(!conformingType->hasArchetype() &&
+           "ProtocolConformances should store interface types");
+  }
+
   /// Get the protocol being conformed to.
   ProtocolDecl *getProtocol() const { return ProtocolAndState.getPointer(); }
 

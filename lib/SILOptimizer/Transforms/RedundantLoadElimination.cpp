@@ -159,7 +159,11 @@ static bool isRLEInertInstruction(SILInstruction *Inst) {
   case SILInstructionKind::CondFailInst:
   case SILInstructionKind::IsEscapingClosureInst:
   case SILInstructionKind::IsUniqueInst:
+  case SILInstructionKind::EndCOWMutationInst:
   case SILInstructionKind::FixLifetimeInst:
+  case SILInstructionKind::EndAccessInst:
+  case SILInstructionKind::SetDeallocatingInst:
+  case SILInstructionKind::DeallocRefInst:
     return true;
   default:
     return false;
@@ -1333,14 +1337,14 @@ SILValue RLEContext::computePredecessorLocationValue(SILBasicBlock *BB,
 
   // Finally, collect all the values for the SILArgument, materialize it using
   // the SSAUpdater.
-  Updater.Initialize(
+  Updater.initialize(
       L.getType(&BB->getModule(), TypeExpansionContext(*BB->getParent()))
           .getObjectType());
   for (auto V : Values) {
-    Updater.AddAvailableValue(V.first, V.second);
+    Updater.addAvailableValue(V.first, V.second);
   }
 
-  return Updater.GetValueInMiddleOfBlock(BB);
+  return Updater.getValueInMiddleOfBlock(BB);
 }
 
 bool RLEContext::collectLocationValues(SILBasicBlock *BB, LSLocation &L,
@@ -1393,7 +1397,7 @@ void RLEContext::processBasicBlocksForGenKillSet() {
   for (SILBasicBlock *BB : PO->getReversePostOrder()) {
     LLVM_DEBUG(llvm::dbgs() << "PROCESS " << printCtx.getID(BB)
                             << " for Gen/Kill:\n";
-               BB->print(llvm::dbgs(), printCtx));
+               BB->print(printCtx));
 
     BlockState &S = getBlockState(BB);
 
@@ -1563,8 +1567,7 @@ bool RLEContext::run() {
     return false;
 
   // Do we run a multi-iteration data flow ?
-  bool Optimistic = Kind == ProcessKind::ProcessMultipleIterations ?
-                        true : false;
+  const bool Optimistic = (Kind == ProcessKind::ProcessMultipleIterations);
 
   // These are a list of basic blocks that we actually processed.
   // We do not process unreachable block, instead we set their liveouts to nil.
@@ -1583,8 +1586,7 @@ bool RLEContext::run() {
 
   LLVM_DEBUG(for (unsigned i = 0; i < LocationVault.size(); ++i) {
     llvm::dbgs() << "LSLocation #" << i;
-    getLocation(i).print(llvm::dbgs(), &Fn->getModule(),
-                         TypeExpansionContext(*Fn));
+    getLocation(i).print(llvm::dbgs());
   });
 
   if (Optimistic)

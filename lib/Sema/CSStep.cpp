@@ -16,8 +16,8 @@
 //===----------------------------------------------------------------------===//
 
 #include "CSStep.h"
-#include "ConstraintSystem.h"
 #include "swift/AST/Types.h"
+#include "swift/Sema/ConstraintSystem.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/STLExtras.h"
@@ -95,12 +95,12 @@ void SplitterStep::computeFollowupSteps(
   auto components = CG.computeConnectedComponents(CS.getTypeVariables());
   unsigned numComponents = components.size();
   if (numComponents < 2) {
-    steps.push_back(llvm::make_unique<ComponentStep>(
+    steps.push_back(std::make_unique<ComponentStep>(
         CS, 0, &CS.InactiveConstraints, Solutions));
     return;
   }
 
-  if (isDebugMode()) {
+  if (CS.isDebugMode()) {
     auto &log = getDebugLogger();
     // Verify that the constraint graph is valid.
     CG.verify();
@@ -125,8 +125,8 @@ void SplitterStep::computeFollowupSteps(
     unsigned solutionIndex = components[i].solutionIndex;
 
     // If there are no dependencies, build a normal component step.
-    if (components[i].dependsOn.empty()) {
-      steps.push_back(llvm::make_unique<ComponentStep>(
+    if (components[i].getDependencies().empty()) {
+      steps.push_back(std::make_unique<ComponentStep>(
           CS, solutionIndex, &Components[i], std::move(components[i]),
           PartialSolutions[solutionIndex]));
       continue;
@@ -135,13 +135,13 @@ void SplitterStep::computeFollowupSteps(
     // Note that the partial results from any dependencies of this component
     // need not be included in the final merged results, because they'll
     // already be part of the partial results for this component.
-    for (auto dependsOn : components[i].dependsOn) {
+    for (auto dependsOn : components[i].getDependencies()) {
       IncludeInMergedResults[dependsOn] = false;
     }
 
     // Otherwise, build a dependent component "splitter" step, which
     // handles all combinations of incoming partial solutions.
-    steps.push_back(llvm::make_unique<DependentComponentSplitterStep>(
+    steps.push_back(std::make_unique<DependentComponentSplitterStep>(
         CS, &Components[i], solutionIndex, std::move(components[i]),
         llvm::makeMutableArrayRef(PartialSolutions.get(), numComponents)));
   }
@@ -220,6 +220,7 @@ bool SplitterStep::mergePartialSolutions() const {
   ArrayRef<unsigned> counts = countsVec;
   SmallVector<unsigned, 2> indices(numComponents, 0);
   bool anySolutions = false;
+  size_t solutionMemory = 0;
   do {
     // Create a new solver scope in which we apply all of the relevant partial
     // solutions.
@@ -236,13 +237,20 @@ bool SplitterStep::mergePartialSolutions() const {
     if (!CS.worseThanBestSolution()) {
       // Finalize this solution.
       auto solution = CS.finalize();
-      if (isDebugMode())
+      solutionMemory += solution.getTotalMemory();
+      if (CS.isDebugMode())
         getDebugLogger() << "(composed solution " << CS.CurrentScore << ")\n";
 
       // Save this solution.
       Solutions.push_back(std::move(solution));
       anySolutions = true;
     }
+
+    // Since merging partial solutions can go exponential, make sure we didn't
+    // pass the "too complex" thresholds including allocated memory and time.
+    if (CS.getExpressionTooComplex(solutionMemory))
+      return false;
+
   } while (nextCombination(counts, indices));
 
   return anySolutions;
@@ -252,18 +260,18 @@ StepResult DependentComponentSplitterStep::take(bool prevFailed) {
   // "split" is considered a failure if previous step failed,
   // or there is a failure recorded by constraint system, or
   // system can't be simplified.
-  if (prevFailed || CS.failedConstraint || CS.simplify())
+  if (prevFailed || CS.getFailedConstraint() || CS.simplify())
     return done(/*isSuccess=*/false);
 
   // Figure out the sets of partial solutions that this component depends on.
   SmallVector<const SmallVector<Solution, 4> *, 2> dependsOnSets;
-  for (auto index : Component.dependsOn) {
+  for (auto index : Component.getDependencies()) {
     dependsOnSets.push_back(&AllPartialSolutions[index]);
   }
 
   // Produce all combinations of partial solutions for the inputs.
   SmallVector<std::unique_ptr<SolverStep>, 4> followup;
-  SmallVector<unsigned, 2> indices(Component.dependsOn.size(), 0);
+  SmallVector<unsigned, 2> indices(Component.getDependencies().size(), 0);
   auto dependsOnSetsRef = llvm::makeArrayRef(dependsOnSets);
   do {
     // Form the set of input partial solutions.
@@ -273,7 +281,7 @@ StepResult DependentComponentSplitterStep::take(bool prevFailed) {
     }
 
     followup.push_back(
-        llvm::make_unique<ComponentStep>(CS, Index, Constraints, Component,
+        std::make_unique<ComponentStep>(CS, Index, Constraints, Component,
                                          std::move(dependsOnSolutions),
                                          Solutions));
   } while (nextCombination(dependsOnSetsRef, indices));
@@ -288,8 +296,9 @@ StepResult DependentComponentSplitterStep::resume(bool prevFailed) {
 
 void DependentComponentSplitterStep::print(llvm::raw_ostream &Out) {
   Out << "DependentComponentSplitterStep for dependencies on [";
-  interleave(Component.dependsOn, [&](unsigned index) { Out << index; },
-             [&] { Out << ", "; });
+  interleave(
+      Component.getDependencies(), [&](unsigned index) { Out << index; },
+      [&] { Out << ", "; });
   Out << "]\n";
 }
 
@@ -329,22 +338,40 @@ StepResult ComponentStep::take(bool prevFailed) {
   auto *disjunction = CS.selectDisjunction();
   auto bestBindings = CS.determineBestBindings();
 
-  if (bestBindings && (!disjunction || (!bestBindings->IsHole &&
-                                        !bestBindings->InvolvesTypeVariables &&
-                                        !bestBindings->FullyBound))) {
+  if (bestBindings &&
+      (!disjunction || bestBindings->favoredOverDisjunction(disjunction))) {
     // Produce a type variable step.
     return suspend(
-        llvm::make_unique<TypeVariableStep>(CS, *bestBindings, Solutions));
+        std::make_unique<TypeVariableStep>(CS, *bestBindings, Solutions));
   } else if (disjunction) {
     // Produce a disjunction step.
     return suspend(
-        llvm::make_unique<DisjunctionStep>(CS, disjunction, Solutions));
+        std::make_unique<DisjunctionStep>(CS, disjunction, Solutions));
   } else if (!CS.solverState->allowsFreeTypeVariables() &&
              CS.hasFreeTypeVariables()) {
     // If there are no disjunctions or type variables to bind
     // we can't solve this system unless we have free type variables
     // allowed in the solution.
     return finalize(/*isSuccess=*/false);
+  }
+
+  // If we don't have any disjunction or type variable choices left, we're done
+  // solving. Make sure we don't have any unsolved constraints left over, using
+  // report_fatal_error to make sure we trap in release builds instead of
+  // potentially miscompiling.
+  if (!CS.ActiveConstraints.empty()) {
+    CS.print(llvm::errs());
+    llvm::report_fatal_error("Active constraints left over?");
+  }
+  if (!CS.solverState->allowsFreeTypeVariables()) {
+    if (!CS.InactiveConstraints.empty()) {
+      CS.print(llvm::errs());
+      llvm::report_fatal_error("Inactive constraints left over?");
+    }
+    if (CS.hasFreeTypeVariables()) {
+      CS.print(llvm::errs());
+      llvm::report_fatal_error("Free type variables left over?");
+    }
   }
 
   // If this solution is worse than the best solution we've seen so far,
@@ -365,7 +392,7 @@ StepResult ComponentStep::take(bool prevFailed) {
   }
 
   auto solution = CS.finalize();
-  if (isDebugMode())
+  if (CS.isDebugMode())
     getDebugLogger() << "(found solution " << getCurrentScore() << ")\n";
 
   Solutions.push_back(std::move(solution));
@@ -382,7 +409,7 @@ StepResult ComponentStep::finalize(bool isSuccess) {
   // Rewind all modifications done to constraint system.
   ComponentScope.reset();
 
-  if (isDebugMode()) {
+  if (CS.isDebugMode()) {
     auto &log = getDebugLogger();
     log << (isSuccess ? "finished" : "failed") << " component #" << Index
         << ")\n";
@@ -414,7 +441,7 @@ StepResult ComponentStep::finalize(bool isSuccess) {
 
 void TypeVariableStep::setup() {
   ++CS.solverState->NumTypeVariablesBound;
-  if (isDebugMode()) {
+  if (CS.isDebugMode()) {
     PrintOptions PO;
     PO.PrintTypesForDebugging = true;
     auto &log = getDebugLogger();
@@ -452,7 +479,7 @@ StepResult TypeVariableStep::resume(bool prevFailed) {
   // Rewind back all of the changes made to constraint system.
   ActiveChoice.reset();
 
-  if (isDebugMode())
+  if (CS.isDebugMode())
     getDebugLogger() << ")\n";
 
   // Let's check if we should stop right before
@@ -491,7 +518,7 @@ StepResult DisjunctionStep::resume(bool prevFailed) {
   // Rewind back the constraint system information.
   ActiveChoice.reset();
 
-  if (isDebugMode())
+  if (CS.isDebugMode())
     getDebugLogger() << ")\n";
 
   // Attempt next disjunction choice (if any left).
@@ -504,7 +531,7 @@ bool DisjunctionStep::shouldSkip(const DisjunctionChoice &choice) const {
   bool attemptFixes = CS.shouldAttemptFixes();
   // Enable all disabled choices in "diagnostic" mode.
   if (!attemptFixes && choice.isDisabled()) {
-    if (isDebugMode()) {
+    if (CS.isDebugMode()) {
       auto &log = getDebugLogger();
       log << "(skipping ";
       choice.print(log, &ctx.SourceMgr);
@@ -552,13 +579,15 @@ bool DisjunctionStep::shouldStopAt(const DisjunctionChoice &choice) const {
   auto delta = LastSolvedChoice->second - getCurrentScore();
   bool hasUnavailableOverloads = delta.Data[SK_Unavailable] > 0;
   bool hasFixes = delta.Data[SK_Fix] > 0;
+  bool hasAsyncMismatch = delta.Data[SK_AsyncSyncMismatch] > 0;
   auto isBeginningOfPartition = choice.isBeginningOfPartition();
 
   // Attempt to short-circuit evaluation of this disjunction only
-  // if the disjunction choice we are comparing to did not involve
-  // selecting unavailable overloads or result in fixes being
-  // applied to reach a solution.
-  return !hasUnavailableOverloads && !hasFixes &&
+  // if the disjunction choice we are comparing to did not involve:
+  //   1. selecting unavailable overloads
+  //   2. result in fixes being applied to reach a solution
+  //   3. selecting an overload that results in an async/sync mismatch
+  return !hasUnavailableOverloads && !hasFixes && !hasAsyncMismatch &&
          (isBeginningOfPartition ||
           shortCircuitDisjunctionAt(choice, lastChoice));
 }
@@ -588,21 +617,6 @@ bool DisjunctionStep::shortCircuitDisjunctionAt(
     Constraint *currentChoice, Constraint *lastSuccessfulChoice) const {
   auto &ctx = CS.getASTContext();
 
-  // If the successfully applied constraint is favored, we'll consider that to
-  // be the "best".
-  if (lastSuccessfulChoice->isFavored() && !currentChoice->isFavored()) {
-#if !defined(NDEBUG)
-    if (lastSuccessfulChoice->getKind() == ConstraintKind::BindOverload) {
-      auto overloadChoice = lastSuccessfulChoice->getOverloadChoice();
-      assert((!overloadChoice.isDecl() ||
-              !overloadChoice.getDecl()->getAttrs().isUnavailable(ctx)) &&
-             "Unavailable decl should not be favored!");
-    }
-#endif
-
-    return true;
-  }
-
   // Anything without a fix is better than anything with a fix.
   if (currentChoice->getFix() && !lastSuccessfulChoice->getFix())
     return true;
@@ -628,16 +642,6 @@ bool DisjunctionStep::shortCircuitDisjunctionAt(
   // Implicit conversions are better than checked casts.
   if (currentChoice->getKind() == ConstraintKind::CheckedCast)
     return true;
-
-  // If we have a SIMD operator, and the prior choice was not a SIMD
-  // Operator, we're done.
-  if (currentChoice->getKind() == ConstraintKind::BindOverload &&
-      isSIMDOperator(currentChoice->getOverloadChoice().getDecl()) &&
-      lastSuccessfulChoice->getKind() == ConstraintKind::BindOverload &&
-      !isSIMDOperator(lastSuccessfulChoice->getOverloadChoice().getDecl()) &&
-      !ctx.TypeCheckerOpts.SolverEnableOperatorDesignatedTypes) {
-    return true;
-  }
 
   return false;
 }

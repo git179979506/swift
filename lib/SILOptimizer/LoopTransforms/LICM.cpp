@@ -103,12 +103,22 @@ static LoadInst *isLoadFromAddr(SILInstruction *I, SILValue addr) {
 /// Returns true if all instructions in \p SideEffectInsts which may alias with
 /// \p addr are either loads or stores from \p addr.
 static bool isOnlyLoadedAndStored(AliasAnalysis *AA, InstSet &SideEffectInsts,
+                                  ArrayRef<LoadInst *> Loads,
+                                  ArrayRef<StoreInst *> Stores,
                                   SILValue addr) {
   for (auto *I : SideEffectInsts) {
     if (AA->mayReadOrWriteMemory(I, addr) &&
         !isStoreToAddr(I, addr) && !isLoadFromAddr(I, addr)) {
       return false;
     }
+  }
+  for (auto *LI : Loads) {
+    if (AA->mayReadFromMemory(LI, addr) && !isLoadFromAddr(LI, addr))
+      return false;
+  }
+  for (auto *SI : Stores) {
+    if (AA->mayWriteToMemory(SI, addr) && !isStoreToAddr(SI, addr))
+      return false;
   }
   return true;
 }
@@ -146,6 +156,57 @@ static bool mayWriteTo(AliasAnalysis *AA, SideEffectAnalysis *SEA,
   return false;
 }
 
+/// Returns true if \p sideEffectInst cannot be reordered with a call to a
+/// global initialier.
+static bool mayConflictWithGlobalInit(AliasAnalysis *AA,
+                    SILInstruction *sideEffectInst, ApplyInst *globalInitCall) {
+  if (auto *SI = dyn_cast<StoreInst>(sideEffectInst)) {
+    return AA->mayReadOrWriteMemory(globalInitCall, SI->getDest());
+  }
+  if (auto *LI = dyn_cast<LoadInst>(sideEffectInst)) {
+    return AA->mayWriteToMemory(globalInitCall, LI->getOperand());
+  }
+  return true;
+}
+
+/// Returns true if any of the instructions in \p sideEffectInsts which are
+/// post-dominated by a call to a global initialier cannot be reordered with
+/// the call.
+static bool mayConflictWithGlobalInit(AliasAnalysis *AA,
+                       InstSet &sideEffectInsts,
+                       ApplyInst *globalInitCall,
+                       SILBasicBlock *preHeader, PostDominanceInfo *PD) {
+  if (!PD->dominates(globalInitCall->getParent(), preHeader))
+    return true;
+
+  SILBasicBlock *globalInitBlock = globalInitCall->getParent();
+  for (auto *seInst : sideEffectInsts) {
+    // Only check instructions in blocks which are "before" (i.e. post-dominated
+    // by) the block which contains the init-call.
+    // Instructions which are before the call in the same block have already
+    // been checked.
+    if (PD->properlyDominates(globalInitBlock, seInst->getParent())) {
+      if (mayConflictWithGlobalInit(AA, seInst, globalInitCall))
+        return true;
+    }
+  }
+  return false;
+}
+
+/// Returns true if any of the instructions in \p sideEffectInsts cannot be
+/// reordered with a call to a global initialier (which is in the same basic
+/// block).
+static bool mayConflictWithGlobalInit(AliasAnalysis *AA,
+                       ArrayRef<SILInstruction *> sideEffectInsts,
+                       ApplyInst *globalInitCall) {
+  for (auto *seInst : sideEffectInsts) {
+    assert(seInst->getParent() == globalInitCall->getParent());
+    if (mayConflictWithGlobalInit(AA, seInst, globalInitCall))
+      return true;
+  }
+  return false;
+}
+
 // When Hoisting / Sinking,
 // Don't descend into control-dependent code.
 // Only traverse into basic blocks that dominate all exits.
@@ -153,8 +214,8 @@ static void getDominatingBlocks(SmallVectorImpl<SILBasicBlock *> &domBlocks,
                                 SILLoop *Loop, DominanceInfo *DT) {
   auto HeaderBB = Loop->getHeader();
   auto DTRoot = DT->getNode(HeaderBB);
-  SmallVector<SILBasicBlock *, 8> ExitingBBs;
-  Loop->getExitingBlocks(ExitingBBs);
+  SmallVector<SILBasicBlock *, 8> ExitingAndLatchBBs;
+  Loop->getExitingAndLatchBlocks(ExitingAndLatchBBs);
   for (llvm::df_iterator<DominanceInfoNode *> It = llvm::df_begin(DTRoot),
                                               E = llvm::df_end(DTRoot);
        It != E;) {
@@ -162,7 +223,7 @@ static void getDominatingBlocks(SmallVectorImpl<SILBasicBlock *> &domBlocks,
 
     // Don't decent into control-dependent code. Only traverse into basic blocks
     // that dominate all exits.
-    if (!std::all_of(ExitingBBs.begin(), ExitingBBs.end(),
+    if (!std::all_of(ExitingAndLatchBBs.begin(), ExitingAndLatchBBs.end(),
                      [=](SILBasicBlock *ExitBB) {
           return DT->dominates(CurBB, ExitBB);
         })) {
@@ -409,6 +470,8 @@ class LoopTreeOptimization {
   AliasAnalysis *AA;
   SideEffectAnalysis *SEA;
   DominanceInfo *DomTree;
+  PostDominanceAnalysis *PDA;
+  PostDominanceInfo *postDomTree = nullptr;
   AccessedStorageAnalysis *ASA;
   bool Changed;
 
@@ -435,10 +498,11 @@ class LoopTreeOptimization {
 public:
   LoopTreeOptimization(SILLoop *TopLevelLoop, SILLoopInfo *LI,
                        AliasAnalysis *AA, SideEffectAnalysis *SEA,
-                       DominanceInfo *DT, AccessedStorageAnalysis *ASA,
+                       DominanceInfo *DT, PostDominanceAnalysis *PDA,
+                       AccessedStorageAnalysis *ASA,
                        bool RunsOnHighLevelSil)
-      : LoopInfo(LI), AA(AA), SEA(SEA), DomTree(DT), ASA(ASA), Changed(false),
-        RunsOnHighLevelSIL(RunsOnHighLevelSil) {
+      : LoopInfo(LI), AA(AA), SEA(SEA), DomTree(DT), PDA(PDA), ASA(ASA),
+        Changed(false), RunsOnHighLevelSIL(RunsOnHighLevelSil) {
     // Collect loops for a recursive bottom-up traversal in the loop tree.
     BotUpWorkList.push_back(TopLevelLoop);
     for (unsigned i = 0; i < BotUpWorkList.size(); ++i) {
@@ -502,7 +566,7 @@ bool LoopTreeOptimization::optimize() {
     // Collect all summary of all sub loops of the current loop. Since we
     // process the loop tree bottom up they are guaranteed to be available in
     // the map.
-    auto CurrLoopSummary = llvm::make_unique<LoopNestSummary>(CurrentLoop);
+    auto CurrLoopSummary = std::make_unique<LoopNestSummary>(CurrentLoop);
     propagateSummaries(CurrLoopSummary);
 
     // If the current loop changed, then we might reveal more instr to hoist
@@ -556,9 +620,11 @@ static bool isSafeReadOnlyApply(SideEffectAnalysis *SEA, ApplyInst *AI) {
 }
 
 static void checkSideEffects(swift::SILInstruction &Inst,
-                             InstSet &SideEffectInsts) {
+                      InstSet &SideEffectInsts,
+                      SmallVectorImpl<SILInstruction *> &sideEffectsInBlock) {
   if (Inst.mayHaveSideEffects()) {
     SideEffectInsts.insert(&Inst);
+    sideEffectsInBlock.push_back(&Inst);
   }
 }
 
@@ -634,19 +700,18 @@ static bool analyzeBeginAccess(BeginAccessInst *BI,
                                InstSet &SideEffectInsts,
                                AccessedStorageAnalysis *ASA,
                                DominanceInfo *DT) {
-  const AccessedStorage &storage =
-      findAccessedStorageNonNested(BI->getSource());
+  auto storage = AccessedStorage::compute(BI->getSource());
   if (!storage) {
     return false;
   }
 
-  auto BIAccessedStorageNonNested = findAccessedStorageNonNested(BI);
+  auto BIAccessedStorageNonNested = AccessedStorage::compute(BI);
   auto safeBeginPred = [&](BeginAccessInst *OtherBI) {
     if (BI == OtherBI) {
       return true;
     }
     return BIAccessedStorageNonNested.isDistinctFrom(
-        findAccessedStorageNonNested(OtherBI));
+        AccessedStorage::compute(OtherBI));
   };
 
   if (!std::all_of(BeginAccesses.begin(), BeginAccesses.end(), safeBeginPred))
@@ -708,6 +773,7 @@ void LoopTreeOptimization::analyzeCurrentLoop(
 
   // Interesting instructions in the loop:
   SmallVector<ApplyInst *, 8> ReadOnlyApplies;
+  SmallVector<ApplyInst *, 8> globalInitCalls;
   SmallVector<LoadInst *, 8> Loads;
   SmallVector<StoreInst *, 8> Stores;
   SmallVector<FixLifetimeInst *, 8> FixLifetimes;
@@ -715,6 +781,7 @@ void LoopTreeOptimization::analyzeCurrentLoop(
   SmallVector<FullApplySite, 8> fullApplies;
 
   for (auto *BB : Loop->getBlocks()) {
+    SmallVector<SILInstruction *, 8> sideEffectsInBlock;
     for (auto &Inst : *BB) {
       switch (Inst.getKind()) {
       case SILInstructionKind::FixLifetimeInst: {
@@ -731,12 +798,12 @@ void LoopTreeOptimization::analyzeCurrentLoop(
       case SILInstructionKind::StoreInst: {
         Stores.push_back(cast<StoreInst>(&Inst));
         LoadsAndStores.push_back(&Inst);
-        checkSideEffects(Inst, sideEffects);
+        checkSideEffects(Inst, sideEffects, sideEffectsInBlock);
         break;
       }
       case SILInstructionKind::BeginAccessInst:
         BeginAccesses.push_back(cast<BeginAccessInst>(&Inst));
-        checkSideEffects(Inst, sideEffects);
+        checkSideEffects(Inst, sideEffects, sideEffectsInBlock);
         break;
       case SILInstructionKind::RefElementAddrInst:
         SpecialHoist.push_back(cast<RefElementAddrInst>(&Inst));
@@ -747,12 +814,21 @@ void LoopTreeOptimization::analyzeCurrentLoop(
         // cond_fail that would have protected (executed before) a memory access
         // must - after hoisting - also be executed before said access.
         HoistUp.insert(&Inst);
-        checkSideEffects(Inst, sideEffects);
+        checkSideEffects(Inst, sideEffects, sideEffectsInBlock);
         break;
       case SILInstructionKind::ApplyInst: {
         auto *AI = cast<ApplyInst>(&Inst);
         if (isSafeReadOnlyApply(SEA, AI)) {
           ReadOnlyApplies.push_back(AI);
+        } else if (SILFunction *callee = AI->getReferencedFunctionOrNull()) {
+          // Calls to global inits are different because we don't care about
+          // side effects which are "after" the call in the loop.
+          if (callee->isGlobalInit() &&
+              // Check against side-effects within the same block.
+              // Side-effects in other blocks are checked later (after we
+              // scanned all blocks of the loop).
+              !mayConflictWithGlobalInit(AA, sideEffectsInBlock, AI))
+            globalInitCalls.push_back(AI);
         }
         // check for array semantics and side effects - same as default
         LLVM_FALLTHROUGH;
@@ -761,7 +837,7 @@ void LoopTreeOptimization::analyzeCurrentLoop(
         if (auto fullApply = FullApplySite::isa(&Inst)) {
           fullApplies.push_back(fullApply);
         }
-        checkSideEffects(Inst, sideEffects);
+        checkSideEffects(Inst, sideEffects, sideEffectsInBlock);
         if (canHoistUpDefault(&Inst, Loop, DomTree, RunsOnHighLevelSIL)) {
           HoistUp.insert(&Inst);
         }
@@ -780,12 +856,29 @@ void LoopTreeOptimization::analyzeCurrentLoop(
       HoistUp.insert(LI);
     }
   }
+
+  if (!globalInitCalls.empty()) {
+    if (!postDomTree) {
+      postDomTree = PDA->get(Preheader->getParent());
+    }
+    if (postDomTree->getRootNode()) {
+      for (ApplyInst *ginitCall : globalInitCalls) {
+        // Check against side effects which are "before" (i.e. post-dominated
+        // by) the global initializer call.
+        if (!mayConflictWithGlobalInit(AA, sideEffects, ginitCall, Preheader,
+             postDomTree)) {
+          HoistUp.insert(ginitCall);
+        }
+      }
+    }
+  }
+
   // Collect memory locations for which we can move all loads and stores out
   // of the loop.
   for (StoreInst *SI : Stores) {
     SILValue addr = SI->getDest();
     if (isLoopInvariant(addr, Loop) &&
-        isOnlyLoadedAndStored(AA, sideEffects, addr)) {
+        isOnlyLoadedAndStored(AA, sideEffects, Loads, Stores, addr)) {
       LoadAndStoreAddrs.insert(addr);
     }
   }
@@ -847,7 +940,7 @@ static SILValue projectLoadValue(SILValue addr, SILValue rootAddr,
     SILValue val = projectLoadValue(TEI->getOperand(), rootAddr, rootVal,
                                     beforeInst);
     SILBuilder B(beforeInst);
-    return B.createTupleExtract(beforeInst->getLoc(), val, TEI->getFieldNo(),
+    return B.createTupleExtract(beforeInst->getLoc(), val, TEI->getFieldIndex(),
                                 TEI->getType().getObjectType());
   }
   llvm_unreachable("unknown projection");
@@ -867,6 +960,41 @@ static bool storesCommonlyDominateLoopExits(SILValue addr, SILLoop *loop,
   // If a store is in the loop header, we already know that it's dominating all
   // loop exits.
   if (stores.count(header) != 0)
+    return true;
+
+  // Also a store in the pre-header dominates all exists. Although the situation
+  // is a bit different here: the store in the pre-header remains - it's not
+  // (re)moved by the LICM transformation.
+  // But even if the loop-stores are not dominating the loop exits, it
+  // makes sense to move them out of the loop if this case. When this is done,
+  // dead-store-elimination can then most likely eliminate the store in the
+  // pre-header.
+  //
+  //   pre_header:
+  //     store %v1 to %addr
+  //   header:
+  //     cond_br %cond, then, tail
+  //   then:
+  //     store %v2 to %addr    // a conditional store in the loop
+  //     br tail
+  //   tail:
+  //     cond_br %loop_cond, header, exit
+  //   exit:
+  //
+  //  will be transformed to
+  //
+  //   pre_header:
+  //     store %v1 to %addr    // <- can be removed by DSE afterwards
+  //   header:
+  //     cond_br %cond, then, tail
+  //   then:
+  //     br tail
+  //   tail(%phi):
+  //     cond_br %loop_cond, header, exit
+  //   exit:
+  //     store %phi to %addr
+  //
+  if (stores.count(loop->getLoopPreheader()) != 0)
     return true;
 
   // Propagate the store-is-not-alive flag through the control flow in the loop,
@@ -931,10 +1059,11 @@ void LoopTreeOptimization::hoistLoadsAndStores(SILValue addr, SILLoop *loop, Ins
   SILBuilder B(preheader->getTerminator());
   auto *initialLoad = B.createLoad(preheader->getTerminator()->getLoc(), addr,
                                    LoadOwnershipQualifier::Unqualified);
+  LLVM_DEBUG(llvm::dbgs() << "Creating preload " << *initialLoad);
 
   SILSSAUpdater ssaUpdater;
-  ssaUpdater.Initialize(initialLoad->getType());
-  ssaUpdater.AddAvailableValue(preheader, initialLoad);
+  ssaUpdater.initialize(initialLoad->getType());
+  ssaUpdater.addAvailableValue(preheader, initialLoad);
 
   // Set all stored values as available values in the ssaUpdater.
   // If there are multiple stores in a block, only the last one counts.
@@ -949,7 +1078,7 @@ void LoopTreeOptimization::hoistLoadsAndStores(SILValue addr, SILLoop *loop, Ins
       if (isLoadFromAddr(dyn_cast<LoadInst>(SI->getSrc()), addr))
         return;
 
-      ssaUpdater.AddAvailableValue(SI->getParent(), SI->getSrc());
+      ssaUpdater.addAvailableValue(SI->getParent(), SI->getSrc());
     }
   }
 
@@ -963,15 +1092,18 @@ void LoopTreeOptimization::hoistLoadsAndStores(SILValue addr, SILLoop *loop, Ins
       currentVal = SILValue();
     }
     if (auto *SI = isStoreToAddr(I, addr)) {
+      LLVM_DEBUG(llvm::dbgs() << "Deleting reloaded store " << *SI);
       currentVal = SI->getSrc();
       toDelete.push_back(SI);
     } else if (auto *LI = isLoadFromAddr(I, addr)) {
       // If we didn't see a store in this block yet, get the current value from
       // the ssaUpdater.
       if (!currentVal)
-        currentVal = ssaUpdater.GetValueInMiddleOfBlock(block);
+        currentVal = ssaUpdater.getValueInMiddleOfBlock(block);
       SILValue projectedValue = projectLoadValue(LI->getOperand(), addr,
                                                  currentVal, LI);
+      LLVM_DEBUG(llvm::dbgs() << "Replacing stored load " << *LI << " with "
+                 << projectedValue);
       LI->replaceAllUsesWith(projectedValue);
       toDelete.push_back(LI);
     }
@@ -984,14 +1116,17 @@ void LoopTreeOptimization::hoistLoadsAndStores(SILValue addr, SILLoop *loop, Ins
         assert(succ->getSinglePredecessorBlock() &&
                "should have split critical edges");
         SILBuilder B(succ->begin());
-        B.createStore(loc.getValue(), ssaUpdater.GetValueInMiddleOfBlock(succ),
-                      addr, StoreOwnershipQualifier::Unqualified);
+        auto *SI = B.createStore(loc.getValue(),
+                                 ssaUpdater.getValueInMiddleOfBlock(succ), addr,
+                                 StoreOwnershipQualifier::Unqualified);
+        (void)SI;
+        LLVM_DEBUG(llvm::dbgs() << "Creating loop-exit store " << *SI);
       }
     }
   }
 
   // In case the value is only stored but never loaded in the loop.
-  recursivelyDeleteTriviallyDeadInstructions(initialLoad);
+  eliminateDeadInstruction(initialLoad);
 }
 
 bool LoopTreeOptimization::hoistAllLoadsAndStores(SILLoop *loop) {
@@ -1041,6 +1176,7 @@ public:
     }
 
     DominanceAnalysis *DA = PM->getAnalysis<DominanceAnalysis>();
+    PostDominanceAnalysis *PDA = PM->getAnalysis<PostDominanceAnalysis>();
     AliasAnalysis *AA = PM->getAnalysis<AliasAnalysis>();
     SideEffectAnalysis *SEA = PM->getAnalysis<SideEffectAnalysis>();
     AccessedStorageAnalysis *ASA = getAnalysis<AccessedStorageAnalysis>();
@@ -1051,8 +1187,8 @@ public:
 
     for (auto *TopLevelLoop : *LoopInfo) {
       if (!DomTree) DomTree = DA->get(F);
-      LoopTreeOptimization Opt(TopLevelLoop, LoopInfo, AA, SEA, DomTree, ASA,
-                               RunsOnHighLevelSil);
+      LoopTreeOptimization Opt(TopLevelLoop, LoopInfo, AA, SEA, DomTree, PDA,
+                               ASA, RunsOnHighLevelSil);
       Changed |= Opt.optimize();
     }
 
